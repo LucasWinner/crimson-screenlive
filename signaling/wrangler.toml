@@ -15,3 +15,16 @@ new_sqlite_classes = ["Room"]
 #   TURN_KEY_ID         - Cloudflare Realtime TURN key id
 #   TURN_KEY_API_TOKEN  - Cloudflare Realtime TURN key API token
 # Without them, /ice returns STUN only (works for most home networks).
+
+[[durable_objects.bindings]]
+name = "USAGE"
+class_name = "Usage"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Usage"]
+
+[vars]
+# Stop handing out TURN credentials once the estimated usage this month (UTC)
+# reaches this many GB. Cloudflare's free TURN allowance is 1000 GB/month.
+TURN_MONTHLY_CAP_GB = "800"

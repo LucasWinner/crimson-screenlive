@@ -20,6 +20,8 @@ Uma alternativa ao "Go Live" do Discord para quando ele não funciona.
 **Qualidade × internet:** cada espectador recebe um fluxo próprio, então o seu *upload* precisa de aproximadamente:
 720p60 ≈ 4,5 Mbps · 1080p60 ≈ 7 Mbps · 1440p60 ≈ 12 Mbps — **por espectador**.
 
+**Conexão via servidor (TURN):** quando a conexão direta não é possível (4G, CGNAT, redes restritas), o vídeo passa pelo TURN da Cloudflare. Para economizar a cota gratuita, quem assiste por esse caminho recebe automaticamente **720p (~3,5 Mbps)**, enquanto quem está em conexão direta continua na qualidade escolhida. O app mostra "via servidor" quando isso acontece.
+
 ## Como funciona
 
 ```
@@ -55,9 +57,19 @@ Servidor de salas local: `cd signaling; npm install; npm run dev` e aponte o app
 
 Testes: `cargo test --workspace` · `bash scripts/e2e.sh` (com o servidor local rodando).
 
+### Servidor de salas (Cloudflare)
+
+```powershell
+cd signaling; npx wrangler deploy
+npx wrangler secret put TURN_KEY_ID          # chave em Realtime → TURN Server
+npx wrangler secret put TURN_KEY_API_TOKEN
+```
+
+O app de quem transmite informa ao servidor quantos bytes enviou pelo TURN; o servidor soma por mês (UTC) e, ao atingir `TURN_MONTHLY_CAP_GB` (padrão **800 GB**, em `wrangler.toml`), para de entregar credenciais TURN até o mês virar — a cota gratuita da Cloudflare é 1000 GB. Consumo estimado: `GET /usage`.
+
 ## Status
 
-- ✅ Windows: transmitir e assistir, até 4 espectadores, áudio do sistema, TURN.
+- ✅ Windows: transmitir e assistir, até 4 espectadores, áudio do sistema, TURN com 720p automático e teto mensal.
 - 🚧 Linux: o app compila, mas a captura de tela (PipeWire/portal) ainda não foi implementada.
 
 ## Licença

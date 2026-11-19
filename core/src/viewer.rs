@@ -104,6 +104,11 @@ impl Viewer {
         }
     }
 
+    /// Whether this connection goes through a TURN relay (None while connecting).
+    pub fn is_relayed(&self) -> Option<bool> {
+        webrtc::is_relayed(&webrtc::stats(&self.webrtc)?)
+    }
+
     pub fn streamer(&self) -> &Peer {
         &self.streamer
     }

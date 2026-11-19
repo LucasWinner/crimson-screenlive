@@ -88,7 +88,7 @@ pub struct EncoderSettings {
 }
 
 pub fn build(spec: &EncoderSpec, s: &EncoderSettings) -> Result<gst::Element> {
-    let enc = gst::ElementFactory::make(spec.factory).name("encoder").build()?;
+    let enc = gst::ElementFactory::make(spec.factory).build()?;
     let br = s.bitrate_kbps.to_string();
     let gop = (s.fps * s.keyframe_secs).to_string();
 

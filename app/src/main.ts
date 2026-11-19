@@ -6,8 +6,8 @@ interface Peer { id: string; name: string; streaming: boolean }
 interface RoomView { code: string; me: string; name: string; peers: Peer[] }
 interface Monitor { id: number; name: string; width: number; height: number; primary: boolean }
 interface SystemInfo { monitors: Monitor[]; encoder: string | null; hardware: boolean }
-interface StreamStatus { active: boolean; encoder: string | null; viewers: number; error: string | null }
-interface WatchStatus { active: boolean; streamerId: string | null; streamerName: string | null; fps: number; ended: string | null }
+interface StreamStatus { active: boolean; encoder: string | null; viewers: number; relayed: number; error: string | null }
+interface WatchStatus { active: boolean; streamerId: string | null; streamerName: string | null; fps: number; relayed: boolean; ended: string | null }
 interface Settings { nickname: string; serverUrl: string; monitorId: number | null; quality: string; audio: boolean }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -103,7 +103,7 @@ function showRoom(view: RoomView | null) {
   if (!view) {
     streaming = false;
     watchingId = null;
-    renderStream({ active: false, encoder: null, viewers: 0, error: null });
+    renderStream({ active: false, encoder: null, viewers: 0, relayed: 0, error: null });
     ui.watching.hidden = true;
     return;
   }
@@ -174,7 +174,8 @@ function renderStream(s: StreamStatus) {
   ui.toggleStream.classList.toggle("danger", s.active);
   if (s.active) {
     const v = s.viewers === 1 ? "1 espectador" : `${s.viewers} espectadores`;
-    ui.streamStats.textContent = `${v} · ${s.encoder ?? ""}`;
+    const relay = s.relayed > 0 ? ` (${s.relayed} via servidor, em 720p)` : "";
+    ui.streamStats.textContent = `${v}${relay} · ${s.encoder ?? ""}`;
   }
   if (s.error) toast(`A transmissão parou: ${friendly(s.error)}`);
   if (was !== streaming) renderPeople();
@@ -186,7 +187,8 @@ function renderWatch(w: WatchStatus) {
   ui.watching.hidden = !w.active;
   if (w.active) {
     ui.watchName.textContent = w.streamerName ?? "";
-    ui.watchStats.textContent = w.fps > 0 ? `${w.fps} fps · abre numa janela separada` : "Conectando…";
+    const path = w.relayed ? " · via servidor (720p para economizar)" : " · conexão direta";
+    ui.watchStats.textContent = w.fps > 0 ? `${w.fps} fps${path}` : "Conectando…";
   }
   if (w.ended && w.ended !== "closed") {
     toast(w.ended === "ended" ? "A transmissão terminou." : `Erro ao assistir: ${friendly(w.ended)}`);

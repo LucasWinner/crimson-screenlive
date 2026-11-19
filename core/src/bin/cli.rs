@@ -126,6 +126,7 @@ async fn main() -> Result<()> {
                 format: VideoFormat { width, height, fps },
                 bitrate_kbps: bitrate,
                 encoder,
+                relay_saver: true,
             };
             let ice = ice::fetch(&server).await;
             let (sig, events) = server.join(&room, &name).await?;

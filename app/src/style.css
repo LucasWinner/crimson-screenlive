@@ -92,7 +92,7 @@ input:focus, select:focus { border-color: var(--crimson); box-shadow: 0 0 0 3px 
 .person.live .avatar { background: var(--crimson-soft); color: var(--crimson-hover); box-shadow: 0 0 0 2px var(--crimson); }
 .person .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .person .you { color: var(--muted); font-size: 13px; }
-.badge { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; padding: 3px 7px; border-radius: 6px; }
+.badge { white-space: nowrap; flex: none; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; padding: 3px 7px; border-radius: 6px; }
 .badge.live { background: var(--crimson); color: #fff; }
 .empty { color: var(--muted); font-size: 14px; text-align: center; padding: 10px; }
 

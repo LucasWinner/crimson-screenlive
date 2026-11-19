@@ -102,6 +102,47 @@ pub fn add_ice(webrtc: &gst::Element, mline: u32, candidate: &str) {
     webrtc.emit_by_name::<()>("add-ice-candidate", &[&mline, &candidate]);
 }
 
+/// Synchronously fetches webrtcbin's stats (blocks briefly; call off the
+/// streaming threads).
+pub fn stats(webrtc: &gst::Element) -> Option<gst::Structure> {
+    let promise = gst::Promise::new();
+    webrtc.emit_by_name::<()>("get-stats", &[&None::<gst::Pad>, &promise]);
+    match promise.wait() {
+        gst::PromiseResult::Replied => promise.get_reply().map(|s| s.to_owned()),
+        _ => None,
+    }
+}
+
+fn stat<'a>(stats: &'a gst::Structure, id: &str) -> Option<gst::Structure> {
+    stats.get::<gst::Structure>(id).ok()
+}
+
+/// True if the selected ICE path goes through a TURN relay on either side.
+/// None until a candidate pair has been selected.
+pub fn is_relayed(stats: &gst::Structure) -> Option<bool> {
+    let pair_id = stats.iter().find_map(|(_, v)| {
+        let s = v.get::<gst::Structure>().ok()?;
+        s.get::<String>("selected-candidate-pair-id").ok()
+    })?;
+    let pair = stat(stats, &pair_id)?;
+    let kind = |field: &str| -> Option<String> {
+        let cand = stat(stats, &pair.get::<String>(field).ok()?)?;
+        cand.get::<String>("candidate-type").ok()
+    };
+    let (local, remote) = (kind("local-candidate-id")?, kind("remote-candidate-id")?);
+    Some(local == "relay" || remote == "relay")
+}
+
+/// Total RTP payload+header bytes sent on all outgoing streams.
+pub fn bytes_sent(stats: &gst::Structure) -> u64 {
+    stats
+        .iter()
+        .filter_map(|(_, v)| v.get::<gst::Structure>().ok())
+        .filter(|s| s.name() == "outbound-rtp")
+        .filter_map(|s| s.get::<u64>("bytes-sent").ok())
+        .sum()
+}
+
 /// Turns the first error/EOS on the bus into a Result; logs warnings.
 pub fn check_bus_message(msg: &gst::Message) -> Result<bool> {
     use gst::MessageView;

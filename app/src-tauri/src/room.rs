@@ -68,6 +68,8 @@ pub struct StreamStatus {
     active: bool,
     encoder: Option<String>,
     viewers: usize,
+    /// How many viewers go through the TURN relay (they get 720p).
+    relayed: usize,
     error: Option<String>,
 }
 
@@ -78,6 +80,8 @@ pub struct WatchStatus {
     streamer_id: Option<String>,
     streamer_name: Option<String>,
     fps: f64,
+    /// Our connection to the streamer goes through the TURN relay.
+    relayed: bool,
     /// Why watching ended: "ended" (streamer stopped), "closed" (window closed), or an error.
     ended: Option<String>,
 }
@@ -171,6 +175,7 @@ pub fn start_stream(
         format,
         bitrate_kbps,
         encoder: None,
+        relay_saver: true,
     };
 
     let streamer = Arc::new(Streamer::new(&cfg, room.sig.clone(), room.ice.clone()).map_err(|e| format!("{e:#}"))?);
@@ -196,6 +201,7 @@ pub fn start_stream(
         active: true,
         encoder: Some(streamer.encoder.label.to_string()),
         viewers: 0,
+        relayed: 0,
         error: None,
     };
     room.streamer = Some(Active { obj: streamer, bus_task });
@@ -334,6 +340,7 @@ fn shutdown(mut room: Room) {
 async fn room_loop(app: AppHandle, shared: Shared, gen: u64, mut events: tokio::sync::mpsc::UnboundedReceiver<ServerMsg>) {
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let (mut last_frames, mut last_at) = (0u64, Instant::now());
+    let mut ticks = 0u64;
     loop {
         tokio::select! {
             msg = events.recv() => match msg {
@@ -358,11 +365,17 @@ async fn room_loop(app: AppHandle, shared: Shared, gen: u64, mut events: tokio::
                     let Some(room) = guard.as_ref().filter(|r| r.generation == gen) else { return };
                     (room.streamer.as_ref().map(|s| s.obj.clone()), room.viewer.as_ref().map(|v| v.obj.clone()))
                 };
+                ticks += 1;
                 if let Some(s) = streamer {
+                    let viewers = s.tick();
+                    if ticks % 15 == 0 {
+                        s.report_relay_usage();
+                    }
                     let _ = app.emit("stream-status", StreamStatus {
                         active: true,
                         encoder: Some(s.encoder.label.to_string()),
-                        viewers: s.viewer_count(),
+                        viewers: viewers.len(),
+                        relayed: viewers.iter().filter(|v| v.relayed == Some(true)).count(),
                         error: None,
                     });
                 }
@@ -376,6 +389,7 @@ async fn room_loop(app: AppHandle, shared: Shared, gen: u64, mut events: tokio::
                             streamer_id: Some(v.streamer().id.clone()),
                             streamer_name: Some(v.streamer().name.clone()),
                             fps: fps.round(),
+                            relayed: v.is_relayed() == Some(true),
                             ended: None,
                         });
                     }

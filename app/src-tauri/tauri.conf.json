@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Crimson ScreenLive",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.crimson.screenlive",
   "build": {
     "frontendDist": "../dist",
@@ -27,10 +27,6 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "resources": {
-      "gstreamer/bin/*": "./",
-      "gstreamer/plugins/*": "gstreamer/plugins/"
-    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",

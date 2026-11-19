@@ -4,7 +4,8 @@
  * Routes:
  *   GET /health                         -> "ok"
  *   POST /rooms                         -> { code } (random room code)
- *   GET /ice                            -> { iceServers } (STUN, + TURN if configured)
+ *   GET /ice                            -> { iceServers, turnCapped } (STUN, + TURN if configured and under the monthly cap)
+ *   GET /usage                          -> { month, usedGb, capGb, turnCapped } (estimated TURN usage)
  *   GET /rooms/:code/ws?name=<nick>     -> WebSocket upgrade into the room
  *
  * Room protocol (JSON text frames):
@@ -19,11 +20,15 @@
  *   client -> server
  *     { type: "signal", to, payload }      // SDP / ICE, relayed as-is
  *     { type: "stream", streaming: bool }  // announce start/stop of a stream
+ *     { type: "turn-usage", bytes: number } // bytes the client sent through TURN (for the cap)
  *     { type: "ping" }
  */
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
+  USAGE: DurableObjectNamespace;
+  /** Stop handing out TURN credentials past this many GB per month (UTC). */
+  TURN_MONTHLY_CAP_GB?: string;
   TURN_KEY_ID?: string;
   TURN_KEY_API_TOKEN?: string;
 }
@@ -38,6 +43,11 @@ const MAX_PEERS = 8;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
 const CODE_RE = /^[A-HJ-NP-Z2-9]{6}$/;
+/** Client-reported RTP bytes exclude UDP/SRTP/TURN headers; pad the estimate. */
+const OVERHEAD = 1.1;
+/** One report covers ~1 min of at most 4 viewers; anything bigger is bogus. */
+const MAX_REPORT_BYTES = 5e9;
+const GB = 1024 ** 3;
 const PUBLIC_STUN = [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] }];
 
 const CORS = {
@@ -69,6 +79,20 @@ export function normalizeCode(raw: string): string | null {
 function cleanName(raw: string | null): string | null {
   const name = (raw ?? "").trim().replace(/\s+/g, " ").slice(0, 32);
   return name.length > 0 ? name : null;
+}
+
+function capGb(env: Env): number {
+  const n = Number(env.TURN_MONTHLY_CAP_GB ?? "800");
+  return Number.isFinite(n) && n > 0 ? n : 800;
+}
+
+function usageStub(env: Env): DurableObjectStub {
+  return env.USAGE.get(env.USAGE.idFromName("global"));
+}
+
+async function usage(env: Env): Promise<{ month: string; bytes: number }> {
+  const res = await usageStub(env).fetch("https://usage/current");
+  return res.json();
 }
 
 async function iceServers(env: Env): Promise<unknown[]> {
@@ -117,7 +141,22 @@ export default {
     }
 
     if (url.pathname === "/ice" && request.method === "GET") {
-      return json({ iceServers: await iceServers(env) });
+      const { bytes } = await usage(env);
+      const turnCapped = (bytes * OVERHEAD) / GB >= capGb(env);
+      if (turnCapped) console.warn("monthly TURN cap reached; handing out STUN only");
+      return json({ iceServers: turnCapped ? PUBLIC_STUN : await iceServers(env), turnCapped });
+    }
+
+    if (url.pathname === "/usage" && request.method === "GET") {
+      const { month, bytes } = await usage(env);
+      const exactGb = (bytes * OVERHEAD) / GB;
+      return json({
+        month,
+        bytes: Math.round(bytes * OVERHEAD),
+        usedGb: Math.round(exactGb * 1000) / 1000,
+        capGb: capGb(env),
+        turnCapped: exactGb >= capGb(env),
+      });
     }
 
     if (parts.length === 3 && parts[0] === "rooms" && parts[2] === "ws") {
@@ -142,7 +181,7 @@ export default {
 export class Room {
   constructor(
     private readonly ctx: DurableObjectState,
-    _env: Env,
+    private readonly env: Env,
   ) {}
 
   async fetch(request: Request): Promise<Response> {
@@ -173,7 +212,7 @@ export class Room {
       return this.sendError(ws, "message must be JSON text under 64KB");
     }
 
-    let msg: { type?: string; to?: string; payload?: unknown; streaming?: unknown };
+    let msg: { type?: string; to?: string; payload?: unknown; streaming?: unknown; bytes?: unknown };
     try {
       msg = JSON.parse(raw);
     } catch {
@@ -191,6 +230,14 @@ export class Room {
         me.streaming = msg.streaming === true;
         ws.serializeAttachment(me);
         this.broadcast({ type: "peer-updated", peer: me }, me.id);
+        return;
+      }
+      case "turn-usage": {
+        const bytes = Number(msg.bytes);
+        if (!Number.isFinite(bytes) || bytes <= 0 || bytes > MAX_REPORT_BYTES) {
+          return this.sendError(ws, "invalid turn-usage");
+        }
+        await usageStub(this.env).fetch("https://usage/add", { method: "POST", body: JSON.stringify({ bytes }) });
         return;
       }
       case "ping":
@@ -238,5 +285,29 @@ export class Room {
 
   private sendError(ws: WebSocket, message: string): void {
     ws.send(JSON.stringify({ type: "error", message }));
+  }
+}
+
+/** Single global counter of estimated TURN bytes, bucketed by UTC month. */
+export class Usage {
+  constructor(
+    private readonly ctx: DurableObjectState,
+    _env: Env,
+  ) {}
+
+  private static month(): string {
+    return new Date().toISOString().slice(0, 7); // YYYY-MM
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const month = Usage.month();
+    const key = `bytes:${month}`;
+    const current = (await this.ctx.storage.get<number>(key)) ?? 0;
+    if (request.method === "POST") {
+      const { bytes } = (await request.json()) as { bytes: number };
+      await this.ctx.storage.put(key, current + bytes);
+      return json({ month, bytes: current + bytes });
+    }
+    return json({ month, bytes: current });
   }
 }

@@ -66,6 +66,20 @@ assert.match((await bob.next("error")).message, /not in room/);
 bob.send({ type: "ping" });
 await bob.next("pong");
 
+// TURN usage accounting (tiny amount so running against prod is harmless).
+const before = await (await fetch(`${base}/usage`)).json();
+bob.send({ type: "turn-usage", bytes: 1000 });
+bob.send({ type: "turn-usage", bytes: -5 });
+assert.match((await bob.next("error")).message, /invalid turn-usage/);
+const after = await (await fetch(`${base}/usage`)).json();
+assert.ok(after.usedGb >= before.usedGb && typeof after.capGb === "number", "usage endpoint");
+const ice2 = await (await fetch(`${base}/ice`)).json();
+assert.equal(typeof ice2.turnCapped, "boolean");
+if (process.env.EXPECT_CAPPED) {
+  assert.equal(ice2.turnCapped, true, "cap should be reached");
+  assert.ok(!JSON.stringify(ice2.iceServers).includes("turn:"), "no TURN when capped");
+}
+
 bob.ws.close();
 const left = await alice.next("peer-left");
 assert.equal(left.id, bWelcome.id);

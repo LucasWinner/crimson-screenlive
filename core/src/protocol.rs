@@ -28,6 +28,8 @@ pub enum ServerMsg {
 pub enum ClientMsg {
     Signal { to: String, payload: Payload },
     Stream { streaming: bool },
+    /// Bytes we pushed through TURN since the last report (for the monthly cap).
+    TurnUsage { bytes: u64 },
     Ping,
 }
 

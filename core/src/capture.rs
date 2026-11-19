@@ -6,9 +6,7 @@ use anyhow::bail;
 use anyhow::Result;
 use gst::prelude::*;
 
-use crate::encoder::EncoderSpec;
-#[cfg(windows)]
-use crate::encoder::Memory;
+use crate::encoder::{EncoderSpec, Memory};
 
 #[derive(Debug, Clone)]
 pub enum VideoSource {
@@ -113,6 +111,20 @@ fn monitor_fragment(_select: &str, _enc: &EncoderSpec, _w: u32, _h: u32, _fps: u
     // TODO(linux): request a ScreenCast session through xdg-desktop-portal
     // (ashpd) and capture with `pipewiresrc fd=.. path=..`.
     bail!("screen capture on Linux is not implemented yet; use --source test")
+}
+
+/// Fragment that rescales the raw output of [`video_fragment`] (same source and
+/// encoder) to a smaller size, staying in GPU memory when the source is.
+pub fn downscale_fragment(src: &VideoSource, enc: &EncoderSpec, w: u32, h: u32) -> String {
+    let on_gpu = cfg!(windows) && !matches!(src, VideoSource::Test) && enc.memory == Memory::D3D11;
+    if on_gpu {
+        format!(
+            "d3d11convert add-borders=true \
+             ! capsfilter caps=\"video/x-raw(memory:D3D11Memory),format=NV12,width={w},height={h}\""
+        )
+    } else {
+        format!("videoscale add-borders=true ! capsfilter caps=\"video/x-raw,format=NV12,width={w},height={h}\"")
+    }
 }
 
 /// Returns a fragment producing Opus RTP, or None when audio is disabled.
