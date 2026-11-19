@@ -15,7 +15,7 @@ use futures_util::StreamExt;
 use gst::prelude::*;
 use screenlive_core::capture::{self, MonitorInfo, VideoFormat, VideoSource};
 use screenlive_core::encoder;
-use screenlive_core::ice::{self, IceServer};
+use screenlive_core::ice::IceServer;
 use screenlive_core::protocol::{Peer, ServerMsg};
 use screenlive_core::signaling::{normalize_code, Server, SignalingHandle};
 use screenlive_core::streamer::{StreamConfig, Streamer};
@@ -319,12 +319,17 @@ async fn join(app: AppHandle, shared: Shared, server: Server, code: String, name
         shutdown(old);
     }
 
-    let ice = ice::fetch(&server).await;
-    let (sig, mut events) = server.join(&code, &name).await.map_err(|e| format!("{e:#}"))?;
-    let (me, peers) = match tokio::time::timeout(Duration::from_secs(10), events.recv()).await {
-        Ok(Some(ServerMsg::Welcome { id, peers })) => (id, peers),
-        _ => return Err("o servidor não respondeu".into()),
-    };
+    let joined = server.enter(&code, &name).await.map_err(|e| {
+        let msg = format!("{e:#}");
+        if msg.contains("invalid app key") {
+            "esta versão do app não é aceita pelo servidor. Peça o instalador mais novo".to_string()
+        } else if msg.contains("did not answer") {
+            "o servidor não respondeu".to_string()
+        } else {
+            msg
+        }
+    })?;
+    let (sig, events, me, peers, ice) = (joined.sig, joined.events, joined.me, joined.peers, joined.ice);
 
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
     let room = Room {

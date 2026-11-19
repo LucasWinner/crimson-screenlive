@@ -2,7 +2,7 @@
 name = "crimson-screenlive"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 description = "Crimson ScreenLive desktop app"
 
 [build-dependencies]

@@ -1,10 +1,7 @@
-//! ICE server config (STUN/TURN) fetched from the signaling server and applied to webrtcbin.
+//! ICE server config (STUN/TURN) received from the signaling server and applied to webrtcbin.
 
-use anyhow::Result;
 use gst::prelude::*;
 use serde::Deserialize;
-
-use crate::signaling::Server;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct IceServer {
@@ -27,27 +24,13 @@ fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D:
     })
 }
 
-pub async fn fetch(server: &Server) -> Vec<IceServer> {
-    #[derive(Deserialize)]
-    struct R {
-        #[serde(rename = "iceServers")]
-        ice_servers: Vec<IceServer>,
-    }
-    let res: Result<R> = async {
-        Ok(reqwest::get(server.http("/ice")).await?.error_for_status()?.json().await?)
-    }
-    .await;
-    match res {
-        Ok(r) => r.ice_servers,
-        Err(e) => {
-            log::warn!("could not fetch ICE servers ({e}); using public STUN");
-            vec![IceServer {
-                urls: vec!["stun:stun.cloudflare.com:3478".into()],
-                username: None,
-                credential: None,
-            }]
-        }
-    }
+/// Public STUN servers, used when the server sent no ICE config.
+pub fn public_stun() -> Vec<IceServer> {
+    vec![IceServer {
+        urls: vec!["stun:stun.cloudflare.com:3478".into(), "stun:stun.l.google.com:19302".into()],
+        username: None,
+        credential: None,
+    }]
 }
 
 fn enc(s: &str) -> String {

@@ -1,21 +1,20 @@
-MIT License
+Copyright (c) 2026 LucasWinner. All rights reserved.
 
-Copyright (c) 2026 LucasWinner
+This software and its source code are proprietary. No license is granted to
+use, copy, modify, merge, publish, distribute, sublicense, or sell copies of
+the source code, in whole or in part, without the prior written permission of
+the copyright holder.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Friends who receive the installer directly from the copyright holder may
+install and use the application for personal, non-commercial purposes.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
+
+Third-party components bundled with the installer keep their own licenses:
+GStreamer and its plugins (LGPL-2.1-or-later), OpenH264 (BSD-2-Clause),
+Opus (BSD-3-Clause), libnice (LGPL-2.1/MPL-1.1), OpenSSL (Apache-2.0),
+GLib (LGPL-2.1-or-later), Tauri (MIT/Apache-2.0).

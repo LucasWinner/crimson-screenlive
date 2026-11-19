@@ -9,11 +9,10 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use screenlive_core::capture::{AudioSource, VideoFormat, VideoSource};
-use screenlive_core::protocol::ServerMsg;
 use screenlive_core::signaling::Server;
 use screenlive_core::streamer::{StreamConfig, Streamer};
 use screenlive_core::viewer::{self, ViewConfig, ViewEnd, Viewer};
-use screenlive_core::{encoder, ice};
+use screenlive_core::encoder;
 
 #[derive(Parser)]
 #[command(about = "Crimson ScreenLive developer CLI")]
@@ -153,9 +152,9 @@ async fn main() -> Result<()> {
                 encoder,
                 relay_saver: true,
             };
-            let ice = ice::fetch(&server).await;
-            let (sig, events) = server.join(&room, &name).await?;
-            let streamer = Streamer::new(&cfg, sig, ice)?;
+            let joined = server.enter(&room, &name).await?;
+            let streamer = Streamer::new(&cfg, joined.sig, joined.ice)?;
+            let events = joined.events;
             log::info!("encoder: {} ({})", streamer.encoder.label, streamer.encoder.factory);
             streamer.start()?;
             println!("Streaming in room {room}. Share this code with your friends. Ctrl+C to stop.");
@@ -164,13 +163,9 @@ async fn main() -> Result<()> {
         Cmd::Watch { room, name, target, headless, seconds } => {
             let server = Server::new(&cli.server)?;
             let cfg = ViewConfig { target, headless, duration: seconds.map(Duration::from_secs) };
-            let ice = ice::fetch(&server).await;
-            let (sig, mut events) = server.join(&room, &name).await?;
-            let peers = match events.recv().await {
-                Some(ServerMsg::Welcome { peers, .. }) => peers,
-                other => bail!("unexpected first message from server: {other:?}"),
-            };
-            let find = viewer::find_streamer(&peers, &mut events, &cfg);
+            let joined = server.enter(&room, &name).await?;
+            let (sig, mut events, ice) = (joined.sig, joined.events, joined.ice);
+            let find = viewer::find_streamer(&joined.peers, &mut events, &cfg);
             let streamer = match cfg.duration {
                 Some(d) => tokio::time::timeout(d, find).await.map_err(|_| anyhow::anyhow!("nobody is streaming"))??,
                 None => find.await?,

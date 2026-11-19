@@ -3,3 +3,6 @@ node_modules/
 .wrangler/
 .dev.vars
 *.mp4
+
+# App access key (see scripts/gen-app-key.mjs) - never commit
+.app-key

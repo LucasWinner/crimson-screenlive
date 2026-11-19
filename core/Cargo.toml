@@ -2,7 +2,7 @@
 name = "screenlive-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 description = "Capture, hardware encode and WebRTC transport for Crimson ScreenLive"
 
 [lib]

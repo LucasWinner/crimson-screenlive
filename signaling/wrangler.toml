@@ -28,3 +28,8 @@ new_sqlite_classes = ["Usage"]
 # Stop handing out TURN credentials once the estimated usage this month (UTC)
 # reaches this many GB. Cloudflare's free TURN allowance is 1000 GB/month.
 TURN_MONTHLY_CAP_GB = "800"
+# App access key: only its SHA-256 lives here (see scripts/gen-app-key.mjs).
+APP_KEY_SHA256 = ""
+REQUIRE_APP_KEY = "true"
+# TURN credential lifetime; must outlast a streaming session.
+TURN_TTL_SECONDS = "21600"

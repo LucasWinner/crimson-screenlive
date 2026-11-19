@@ -13,7 +13,15 @@ pub struct Peer {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ServerMsg {
-    Welcome { id: String, peers: Vec<Peer> },
+    Welcome {
+        id: String,
+        peers: Vec<Peer>,
+        /// STUN, plus TURN credentials for authenticated room members.
+        #[serde(default, rename = "iceServers")]
+        ice_servers: Vec<crate::ice::IceServer>,
+        #[serde(default, rename = "turnCapped")]
+        turn_capped: bool,
+    },
     PeerJoined { peer: Peer },
     PeerLeft { id: String },
     PeerUpdated { peer: Peer },

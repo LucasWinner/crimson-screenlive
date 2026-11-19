@@ -57,6 +57,17 @@ Servidor de salas local: `cd signaling; npm install; npm run dev` e aponte o app
 
 Testes: `cargo test --workspace` · `bash scripts/e2e.sh` (com o servidor local rodando).
 
+### Chave do app
+
+O servidor só aceita apps compilados com a chave do projeto. Ela fica em `.app-key` na raiz (fora do git) e é embutida no app durante a compilação; o servidor guarda só o hash (`APP_KEY_SHA256` em `signaling/wrangler.toml`).
+
+```powershell
+node scripts/gen-app-key.mjs            # cria a chave (se não existir) e mostra o hash
+node scripts/gen-app-key.mjs --rotate   # troca a chave: atualize o hash e faça deploy; versões antigas param de funcionar
+```
+
+**Guarde um backup do `.app-key`** — sem ele, novas versões não conseguem usar o seu servidor (aí é preciso rotacionar e redistribuir o app).
+
 ### Servidor de salas (Cloudflare)
 
 ```powershell
@@ -65,7 +76,7 @@ npx wrangler secret put TURN_KEY_ID          # chave em Realtime → TURN Server
 npx wrangler secret put TURN_KEY_API_TOKEN
 ```
 
-O app de quem transmite informa ao servidor quantos bytes enviou pelo TURN; o servidor soma por mês (UTC) e, ao atingir `TURN_MONTHLY_CAP_GB` (padrão **800 GB**, em `wrangler.toml`), para de entregar credenciais TURN até o mês virar — a cota gratuita da Cloudflare é 1000 GB. Consumo estimado: `GET /usage`.
+O app de quem transmite informa ao servidor quantos bytes enviou pelo TURN; o servidor soma por mês (UTC) e, ao atingir `TURN_MONTHLY_CAP_GB` (padrão **800 GB**, em `wrangler.toml`), para de entregar credenciais TURN até o mês virar — a cota gratuita da Cloudflare é 1000 GB. Consumo estimado: `GET /usage`. Credenciais TURN só são entregues a quem entra numa sala com a chave do app, e valem por `TURN_TTL_SECONDS` (6 h).
 
 ## Status
 
@@ -74,4 +85,5 @@ O app de quem transmite informa ao servidor quantos bytes enviou pelo TURN; o se
 
 ## Licença
 
-MIT. O instalador inclui bibliotecas do [GStreamer](https://gstreamer.freedesktop.org/) (LGPL) e o OpenH264 da Cisco (BSD).
+Copyright © 2026 LucasWinner. **Todos os direitos reservados** — veja [LICENSE](LICENSE).
+O instalador inclui bibliotecas de terceiros com licenças próprias (GStreamer/LGPL, OpenH264/BSD, entre outras).

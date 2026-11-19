@@ -5,6 +5,8 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 use url::Url;
 
@@ -47,10 +49,32 @@ pub fn normalize_code(raw: &str) -> Option<String> {
     (code.len() == 6 && code.chars().all(|c| ALPHABET.contains(c))).then_some(code)
 }
 
+/// A joined room: the connection plus what the server told us on arrival.
+pub struct Joined {
+    pub sig: SignalingHandle,
+    pub events: mpsc::UnboundedReceiver<ServerMsg>,
+    pub me: String,
+    pub peers: Vec<crate::protocol::Peer>,
+    pub ice: Vec<crate::ice::IceServer>,
+    pub turn_capped: bool,
+}
+
 /// HTTP base URL of the signaling server, e.g. `https://x.workers.dev`.
 #[derive(Clone, Debug)]
 pub struct Server {
     base: Url,
+    key: Option<String>,
+}
+
+/// Header carrying the app access key (checked by the server).
+pub const KEY_HEADER: &str = "x-screenlive-key";
+
+/// The app key: SCREENLIVE_APP_KEY at runtime, else the one compiled in from `.app-key`.
+fn app_key() -> Option<String> {
+    std::env::var("SCREENLIVE_APP_KEY")
+        .ok()
+        .or_else(|| option_env!("SCREENLIVE_APP_KEY").map(str::to_owned))
+        .filter(|k| !k.trim().is_empty())
 }
 
 impl Server {
@@ -59,7 +83,7 @@ impl Server {
         if !matches!(base.scheme(), "http" | "https") {
             bail!("server URL must be http(s)://");
         }
-        Ok(Self { base })
+        Ok(Self { base, key: app_key() })
     }
 
     pub fn http(&self, path: &str) -> Url {
@@ -72,15 +96,38 @@ impl Server {
         struct R {
             code: String,
         }
-        let r: R = reqwest::Client::new()
-            .post(self.http("/rooms"))
-            .send()
-            .await
-            .context("could not reach signaling server")?
-            .error_for_status()?
-            .json()
-            .await?;
+        let mut req = reqwest::Client::new().post(self.http("/rooms"));
+        if let Some(k) = &self.key {
+            req = req.header(KEY_HEADER, k);
+        }
+        let res = req.send().await.context("could not reach signaling server")?;
+        if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+            bail!("invalid app key: this version of the app can't use this server");
+        }
+        let r: R = res.error_for_status()?.json().await?;
         Ok(r.code)
+    }
+
+    /// Joins a room and waits for the server's welcome (our id, who's there, ICE config).
+    pub async fn enter(&self, room: &str, name: &str) -> Result<Joined> {
+        let (sig, mut events) = self.join(room, name).await?;
+        match tokio::time::timeout(Duration::from_secs(10), events.recv()).await {
+            Ok(Some(ServerMsg::Welcome { id, peers, ice_servers, turn_capped })) => {
+                if turn_capped {
+                    log::warn!("monthly TURN budget reached: only direct connections this month");
+                }
+                Ok(Joined {
+                    sig,
+                    events,
+                    me: id,
+                    peers,
+                    ice: if ice_servers.is_empty() { crate::ice::public_stun() } else { ice_servers },
+                    turn_capped,
+                })
+            }
+            Ok(Some(other)) => bail!("unexpected first message from server: {other:?}"),
+            _ => bail!("the server did not answer"),
+        }
     }
 
     /// Connects to a room. Returns a send handle and the stream of server messages.
@@ -99,9 +146,17 @@ impl Server {
         ws_url.set_scheme(if self.base.scheme() == "https" { "wss" } else { "ws" }).unwrap();
         ws_url.query_pairs_mut().append_pair("name", name);
 
-        let (ws, _) = tokio_tungstenite::connect_async(ws_url.as_str())
-            .await
-            .with_context(|| format!("could not join room {room}"))?;
+        let mut request = ws_url.as_str().into_client_request()?;
+        if let Some(k) = &self.key {
+            request.headers_mut().insert(KEY_HEADER, HeaderValue::from_str(k).context("bad app key")?);
+        }
+        let (ws, _) = match tokio_tungstenite::connect_async(request).await {
+            Ok(ok) => ok,
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) if resp.status().as_u16() == 401 => {
+                bail!("invalid app key: this version of the app can't use this server")
+            }
+            Err(e) => return Err(anyhow::Error::new(e).context(format!("could not join room {room}"))),
+        };
         let (mut sink, mut stream) = ws.split();
 
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Outgoing>();

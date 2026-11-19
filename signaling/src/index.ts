@@ -4,13 +4,17 @@
  * Routes:
  *   GET /health                         -> "ok"
  *   POST /rooms                         -> { code } (random room code)
- *   GET /ice                            -> { iceServers, turnCapped } (STUN, + TURN if configured and under the monthly cap)
+ *   GET /ice                            -> { iceServers } (public STUN only; TURN comes in "welcome")
  *   GET /usage                          -> { month, usedGb, capGb, turnCapped } (estimated TURN usage)
  *   GET /rooms/:code/ws?name=<nick>     -> WebSocket upgrade into the room
  *
+ * POST /rooms and the WebSocket require the app key in the "x-screenlive-key"
+ * header (its SHA-256 must be in APP_KEY_SHA256) unless REQUIRE_APP_KEY="false".
+ * TURN credentials are only handed to authenticated room members.
+ *
  * Room protocol (JSON text frames):
  *   server -> client
- *     { type: "welcome", id, peers: Peer[] }
+ *     { type: "welcome", id, peers: Peer[], iceServers, turnCapped }
  *     { type: "peer-joined", peer: Peer }
  *     { type: "peer-left", id }
  *     { type: "peer-updated", peer: Peer }
@@ -27,6 +31,11 @@
 export interface Env {
   ROOMS: DurableObjectNamespace;
   USAGE: DurableObjectNamespace;
+  /** Comma-separated SHA-256 hex digests of accepted app keys. */
+  APP_KEY_SHA256?: string;
+  REQUIRE_APP_KEY?: string;
+  /** Lifetime of issued TURN credentials; must outlast a streaming session. */
+  TURN_TTL_SECONDS?: string;
   /** Stop handing out TURN credentials past this many GB per month (UTC). */
   TURN_MONTHLY_CAP_GB?: string;
   TURN_KEY_ID?: string;
@@ -81,6 +90,33 @@ function cleanName(raw: string | null): string | null {
   return name.length > 0 ? name : null;
 }
 
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** True if the request carries an accepted app key (or keys aren't required). */
+async function authorized(request: Request, env: Env): Promise<boolean> {
+  if (env.REQUIRE_APP_KEY === "false") return true;
+  const key = request.headers.get("x-screenlive-key");
+  const accepted = (env.APP_KEY_SHA256 ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (!key || accepted.length === 0) return false;
+  return accepted.includes(await sha256Hex(key.trim()));
+}
+
+function ttlSeconds(env: Env): number {
+  const n = Number(env.TURN_TTL_SECONDS ?? "21600");
+  return Number.isFinite(n) && n >= 300 ? Math.floor(n) : 21600;
+}
+
+/** ICE config for a room member: STUN, plus TURN while under the monthly cap. */
+async function memberIce(env: Env): Promise<{ iceServers: unknown[]; turnCapped: boolean }> {
+  const { bytes } = await usage(env);
+  const turnCapped = (bytes * OVERHEAD) / GB >= capGb(env);
+  if (turnCapped) console.warn("monthly TURN cap reached; handing out STUN only");
+  return { iceServers: turnCapped ? PUBLIC_STUN : await iceServers(env), turnCapped };
+}
+
 function capGb(env: Env): number {
   const n = Number(env.TURN_MONTHLY_CAP_GB ?? "800");
   return Number.isFinite(n) && n > 0 ? n : 800;
@@ -107,7 +143,7 @@ async function iceServers(env: Env): Promise<unknown[]> {
           authorization: `Bearer ${env.TURN_KEY_API_TOKEN.trim()}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ ttl: 86400 }),
+        body: JSON.stringify({ ttl: ttlSeconds(env) }),
       });
       if (!res.ok) {
         console.error(`TURN API ${path}: HTTP ${res.status}`);
@@ -137,14 +173,12 @@ export default {
     if (url.pathname === "/health") return new Response("ok", { headers: CORS });
 
     if (url.pathname === "/rooms" && request.method === "POST") {
+      if (!(await authorized(request, env))) return json({ error: "invalid app key" }, 401);
       return json({ code: randomString(6) });
     }
 
     if (url.pathname === "/ice" && request.method === "GET") {
-      const { bytes } = await usage(env);
-      const turnCapped = (bytes * OVERHEAD) / GB >= capGb(env);
-      if (turnCapped) console.warn("monthly TURN cap reached; handing out STUN only");
-      return json({ iceServers: turnCapped ? PUBLIC_STUN : await iceServers(env), turnCapped });
+      return json({ iceServers: PUBLIC_STUN });
     }
 
     if (url.pathname === "/usage" && request.method === "GET") {
@@ -166,6 +200,7 @@ export default {
       const code = normalizeCode(parts[1]);
       if (!code) return json({ error: "invalid room code" }, 400);
       if (!cleanName(url.searchParams.get("name"))) return json({ error: "missing name" }, 400);
+      if (!(await authorized(request, env))) return json({ error: "invalid app key" }, 401);
       const stub = env.ROOMS.get(env.ROOMS.idFromName(code));
       return stub.fetch(request);
     }
@@ -199,7 +234,8 @@ export class Room {
     server.serializeAttachment(peer);
 
     const others = sockets.map((ws) => ws.deserializeAttachment() as Peer);
-    server.send(JSON.stringify({ type: "welcome", id: peer.id, peers: others }));
+    const ice = await memberIce(this.env);
+    server.send(JSON.stringify({ type: "welcome", id: peer.id, peers: others, ...ice }));
     this.broadcast({ type: "peer-joined", peer }, peer.id);
 
     return new Response(null, { status: 101, webSocket: client });
