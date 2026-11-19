@@ -51,13 +51,19 @@
         </div>
 
         <div id="watching" class="card watching" hidden>
-          <div class="live-dot"></div>
-          <div class="grow">
-            <div>Assistindo <b id="watch-name"></b></div>
-            <div class="muted small" id="watch-stats">Conectando…</div>
+          <div class="watch-row">
+            <div class="live-dot"></div>
+            <div class="grow">
+              <div>Assistindo <b id="watch-name"></b></div>
+              <div class="muted small" id="watch-stats">Conectando…</div>
+            </div>
+            <button id="fullscreen" class="btn ghost small" title="Tela cheia">Tela cheia</button>
+            <button id="stop-watch" class="btn ghost small">Parar</button>
           </div>
-          <button id="fullscreen" class="btn ghost small" title="Tela cheia">Tela cheia</button>
-          <button id="stop-watch" class="btn ghost small">Parar</button>
+          <div id="watch-relay" class="relay-note" hidden>
+            <span class="badge relay">VIA SERVIDOR</span>
+            <span>Sem conexão direta: o vídeo passa pelo servidor (usa a cota do TURN).</span>
+          </div>
         </div>
 
         <h2>Na sala</h2>
@@ -70,14 +76,24 @@
               <span>Tela</span>
               <select id="monitor"></select>
             </label>
-            <label class="field">
-              <span>Qualidade</span>
-              <select id="quality">
-                <option value="720p60">720p · 60 fps (internet fraca)</option>
-                <option value="1080p60">1080p · 60 fps</option>
-                <option value="1440p60">1440p · 60 fps (muito upload)</option>
-              </select>
-            </label>
+            <div class="row">
+              <label class="field grow">
+                <span>Resolução</span>
+                <select id="resolution">
+                  <option value="720">720p</option>
+                  <option value="1080">1080p</option>
+                  <option value="1440">1440p (vídeos/filmes)</option>
+                </select>
+              </label>
+              <label class="field fps">
+                <span>FPS</span>
+                <select id="fps">
+                  <option value="60">60</option>
+                  <option value="30">30</option>
+                </select>
+              </label>
+            </div>
+            <p id="quality-hint" class="muted small"></p>
             <div class="audio-summary">
               <span class="muted small">Áudio:</span>
               <span id="audio-summary" class="small grow"></span>
@@ -87,6 +103,10 @@
           <div id="stream-live" class="live-info" hidden>
             <span class="badge live">AO VIVO</span>
             <span id="stream-stats"></span>
+          </div>
+          <div id="stream-relay" class="relay-note" hidden>
+            <span class="badge relay">VIA SERVIDOR</span>
+            <span id="stream-relay-text"></span>
           </div>
           <button id="toggle-stream" class="btn primary block">Transmitir</button>
           <p id="encoder-info" class="muted small center"></p>

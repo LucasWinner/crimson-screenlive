@@ -10,6 +10,11 @@ Uma alternativa ao "Go Live" do Discord para quando ele não funciona.
 
 ## Baixar e usar (Windows 10/11)
 
+Duas opções, mesmo app:
+- **Portátil (`CrimsonScreenLive_x.y.z_x64-portable.exe`)** — um único arquivo, não instala nada: é só abrir. Na primeira vez ele descompacta o app em `%LOCALAPPDATA%CrimsonScreenLiveportable` (~3 s); depois abre direto.
+- **Instalador (`..._x64-setup.exe`)** — instala com atalho no Menu Iniciar e desinstalador.
+
+
 1. Baixe o instalador em [Releases](../../releases/latest) (`CrimsonScreenLive_x.y.z_x64-setup.exe`) e instale.
    > O Windows pode mostrar "O Windows protegeu o computador" porque o app não é assinado. Clique em **Mais informações → Executar assim mesmo**.
 2. Abra o **Crimson ScreenLive**, escolha um apelido.
@@ -17,10 +22,10 @@ Uma alternativa ao "Go Live" do Discord para quando ele não funciona.
 4. Para transmitir: escolha a tela, a qualidade e clique **Transmitir**.
 5. Para assistir: clique **Assistir** ao lado de quem está **AO VIVO**. O vídeo abre numa janela separada (botão **Tela cheia** no app).
 
-**Qualidade × internet:** cada espectador recebe um fluxo próprio, então o seu *upload* precisa de aproximadamente:
-720p60 ≈ 4,5 Mbps · 1080p60 ≈ 7 Mbps · 1440p60 ≈ 12 Mbps — **por espectador**.
+**Qualidade × internet:** escolha resolução (720p/1080p/1440p) e 30 ou 60 FPS. Cada espectador recebe um fluxo próprio, então o seu *upload* precisa de aproximadamente, **por espectador**:
+720p ≈ 3 / 4,5 Mbps · 1080p ≈ 4,7 / 7 Mbps · 1440p ≈ 8 / 12 Mbps (30 / 60 FPS). 30 FPS é ótimo para vídeos e filmes; 60 FPS para jogos.
 
-**Conexão via servidor (TURN):** quando a conexão direta não é possível (4G, CGNAT, redes restritas), o vídeo passa pelo TURN da Cloudflare. Para economizar a cota gratuita, quem assiste por esse caminho recebe automaticamente **720p (~3,5 Mbps)**, enquanto quem está em conexão direta continua na qualidade escolhida. O app mostra "via servidor" quando isso acontece.
+**Conexão via servidor (TURN):** quando a conexão direta não é possível (4G, CGNAT, redes restritas), o vídeo passa pelo TURN da Cloudflare. A qualidade é a mesma da conexão direta; o app mostra um aviso **VIA SERVIDOR** (em amarelo) para quem assiste e para quem transmite, porque esse tráfego conta na cota do TURN.
 
 ## Como funciona
 

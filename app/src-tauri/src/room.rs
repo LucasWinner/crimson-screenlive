@@ -106,11 +106,30 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// "<720|1080|1440>p<30|60>" -> format and video bitrate (kbps). 30 fps needs
+/// roughly 2/3 of the bits of 60 fps for the same sharpness.
 fn quality(preset: &str) -> (VideoFormat, u32) {
-    match preset {
-        "720p60" => (VideoFormat { width: 1280, height: 720, fps: 60 }, 4500),
-        "1440p60" => (VideoFormat { width: 2560, height: 1440, fps: 60 }, 12000),
-        _ => (VideoFormat { width: 1920, height: 1080, fps: 60 }, 7000),
+    let (res, fps) = preset.split_once('p').unwrap_or(("1080", "60"));
+    let fps: u32 = if fps == "30" { 30 } else { 60 };
+    let (width, height, kbps60) = match res {
+        "720" => (1280, 720, 4500),
+        "1440" => (2560, 1440, 12000),
+        _ => (1920, 1080, 7000),
+    };
+    let kbps = if fps == 30 { kbps60 * 2 / 3 } else { kbps60 };
+    (VideoFormat { width, height, fps }, kbps)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn quality_presets() {
+        let (f, k) = super::quality("1440p30");
+        assert_eq!((f.width, f.height, f.fps, k), (2560, 1440, 30, 8000));
+        let (f, k) = super::quality("720p60");
+        assert_eq!((f.width, f.height, f.fps, k), (1280, 720, 60, 4500));
+        let (f, _) = super::quality("garbage");
+        assert_eq!((f.height, f.fps), (1080, 60));
     }
 }
 
@@ -202,7 +221,7 @@ pub fn start_stream(
         format,
         bitrate_kbps,
         encoder: None,
-        relay_saver: true,
+        relay_saver: false,
     };
 
     let streamer = Arc::new(Streamer::new(&cfg, room.sig.clone(), room.ice.clone()).map_err(|e| format!("{e:#}"))?);

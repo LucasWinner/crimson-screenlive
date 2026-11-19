@@ -1,6 +1,6 @@
 //! Streamer: capture -> raw tee -> encoder tier(s) -> tee -> one webrtcbin per viewer.
 //!
-//! Every viewer starts on the full-quality tier. Viewers whose connection goes
+//! Every viewer gets the full-quality tier. With `relay_saver` on, viewers whose connection goes
 //! through a TURN relay (paid bandwidth) are moved to a lazily-created 720p
 //! low-bitrate tier, so direct viewers keep full quality. Each viewer has its
 //! own RTP payloader, so switching tiers keeps its RTP stream continuous.
@@ -27,7 +27,8 @@ pub struct StreamConfig {
     pub format: VideoFormat,
     pub bitrate_kbps: u32,
     pub encoder: Option<String>,
-    /// Move TURN-relayed viewers to a cheaper 720p stream.
+    /// Move TURN-relayed viewers to a cheaper 720p stream (off by default:
+    /// users preferred full quality; the monthly TURN cap still applies).
     pub relay_saver: bool,
 }
 
@@ -39,7 +40,7 @@ impl Default for StreamConfig {
             format: VideoFormat { width: 1920, height: 1080, fps: 60 },
             bitrate_kbps: 7000,
             encoder: None,
-            relay_saver: true,
+            relay_saver: false,
         }
     }
 }

@@ -102,7 +102,7 @@ input:focus, select:focus { border-color: var(--crimson); box-shadow: 0 0 0 3px 
 .toggle input { width: 18px; height: 18px; accent-color: var(--crimson); }
 .live-info { display: flex; align-items: center; gap: 10px; padding: 6px 2px; }
 
-.watching { display: flex; align-items: center; gap: 12px; border-color: var(--crimson); background: linear-gradient(90deg, var(--crimson-soft), var(--surface) 70%); }
+.watching { display: flex; flex-direction: column; gap: 4px; border-color: var(--crimson); background: linear-gradient(90deg, var(--crimson-soft), var(--surface) 70%); }
 .live-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--crimson); animation: pulse 1.4s infinite; flex: none; }
 @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(215, 38, 61, 0.6); } 50% { box-shadow: 0 0 0 7px rgba(215, 38, 61, 0); } }
 
@@ -111,6 +111,14 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 .settings { display: flex; flex-direction: column; gap: 12px; padding: 18px; }
 .settings h2 { margin: 0; font-size: 17px; text-transform: none; letter-spacing: 0; color: var(--text); }
 
+.watch-row { display: flex; align-items: center; gap: 12px; }
+.field.fps { width: 92px; flex: none; }
+.badge.relay { background: #f5a524; color: #1c1300; }
+.relay-note {
+  display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; padding: 8px 10px;
+  border-radius: 8px; background: rgba(245, 165, 36, 0.12); border: 1px solid rgba(245, 165, 36, 0.45);
+  font-size: 13px; color: #f7d08a;
+}
 .audio-summary { display: flex; align-items: baseline; gap: 6px; }
 .link { background: none; border: none; padding: 0; color: var(--crimson-hover); cursor: pointer; font: inherit; text-decoration: underline; }
 .link.small { font-size: 13px; }

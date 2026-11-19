@@ -29,7 +29,12 @@ const ui = {
   leave: $("leave"),
   people: $("people"),
   monitor: $<HTMLSelectElement>("monitor"),
-  quality: $<HTMLSelectElement>("quality"),
+  resolution: $<HTMLSelectElement>("resolution"),
+  fps: $<HTMLSelectElement>("fps"),
+  qualityHint: $("quality-hint"),
+  watchRelay: $("watch-relay"),
+  streamRelay: $("stream-relay"),
+  streamRelayText: $("stream-relay-text"),
   audioSummary: $("audio-summary"),
   changeAudio: $("change-audio"),
   audioExclude: $<HTMLSelectElement>("audio-exclude"),
@@ -179,13 +184,16 @@ function renderStream(s: StreamStatus) {
   streaming = s.active;
   ui.streamForm.hidden = s.active;
   ui.streamLive.hidden = !s.active;
+  ui.streamRelay.hidden = !(s.active && s.relayed > 0);
   ui.toggleStream.textContent = s.active ? "Parar transmissão" : "Transmitir";
   ui.toggleStream.classList.toggle("primary", !s.active);
   ui.toggleStream.classList.toggle("danger", s.active);
   if (s.active) {
     const v = s.viewers === 1 ? "1 espectador" : `${s.viewers} espectadores`;
-    const relay = s.relayed > 0 ? ` (${s.relayed} via servidor, em 720p)` : "";
-    ui.streamStats.textContent = `${v}${relay} · ${s.encoder ?? ""}`;
+    ui.streamStats.textContent = `${v} · ${s.encoder ?? ""}`;
+    ui.streamRelayText.textContent =
+      s.relayed === 1 ? "1 espectador está recebendo pelo servidor (usa a cota do TURN)."
+      : `${s.relayed} espectadores estão recebendo pelo servidor (usa a cota do TURN).`;
   }
   if (s.error) toast(`A transmissão parou: ${friendly(s.error)}`);
   if (was !== streaming) renderPeople();
@@ -195,10 +203,10 @@ function renderWatch(w: WatchStatus) {
   const before = watchingId;
   watchingId = w.active ? w.streamerId : null;
   ui.watching.hidden = !w.active;
+  ui.watchRelay.hidden = !(w.active && w.relayed);
   if (w.active) {
     ui.watchName.textContent = w.streamerName ?? "";
-    const path = w.relayed ? " · via servidor (720p para economizar)" : " · conexão direta";
-    ui.watchStats.textContent = w.fps > 0 ? `${w.fps} fps${path}` : "Conectando…";
+    ui.watchStats.textContent = w.fps > 0 ? `${w.fps} fps${w.relayed ? "" : " · conexão direta"}` : "Conectando…";
   }
   if (w.ended && w.ended !== "closed") {
     toast(w.ended === "ended" ? "A transmissão terminou." : `Erro ao assistir: ${friendly(w.ended)}`);
@@ -237,7 +245,7 @@ async function toggleStream() {
     return;
   }
   settings.monitorId = ui.monitor.value ? Number(ui.monitor.value) : null;
-  settings.quality = ui.quality.value;
+  settings.quality = `${ui.resolution.value}p${ui.fps.value}`;
   await persist(); // the backend reads the audio choice from saved settings
   const s = await run(ui.toggleStream, () =>
     invoke<StreamStatus>("start_stream", {
@@ -247,6 +255,22 @@ async function toggleStream() {
   );
   if (s) renderStream(s);
 }
+
+// ---- quality
+
+/** Mirrors quality() in src-tauri/src/room.rs. */
+function videoKbps(res: string, fps: string) {
+  const at60 = res === "720" ? 4500 : res === "1440" ? 12000 : 7000;
+  return fps === "30" ? Math.round((at60 * 2) / 3) : at60;
+}
+
+function renderQualityHint() {
+  const mbps = (videoKbps(ui.resolution.value, ui.fps.value) + 128) / 1000;
+  const tip = ui.fps.value === "30" ? "bom para vídeos e filmes" : "melhor para jogos";
+  ui.qualityHint.textContent = `~${mbps.toFixed(1).replace(".", ",")} Mbps de upload por espectador · ${tip}`;
+}
+ui.resolution.onchange = renderQualityHint;
+ui.fps.onchange = renderQualityHint;
 
 // ---- audio source settings
 
@@ -388,7 +412,10 @@ void listen<WatchStatus>("watch-status", (e) => renderWatch(e.payload));
 async function init() {
   settings = await invoke<Settings>("get_settings");
   ui.nickname.value = settings.nickname;
-  ui.quality.value = settings.quality;
+  const [res, fps] = (settings.quality || "1080p60").split("p");
+  ui.resolution.value = ["720", "1080", "1440"].includes(res) ? res : "1080";
+  ui.fps.value = fps === "30" ? "30" : "60";
+  renderQualityHint();
   renderAudioSummary();
 
   const info = await invoke<SystemInfo>("system_info");

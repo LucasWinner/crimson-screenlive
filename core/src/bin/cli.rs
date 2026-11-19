@@ -77,6 +77,9 @@ enum Cmd {
         /// Force an encoder (see `encoders`).
         #[arg(long)]
         encoder: Option<String>,
+        /// Send 720p to viewers connected through the TURN relay.
+        #[arg(long)]
+        relay_saver: bool,
     },
     /// Watch a stream in a room.
     Watch {
@@ -125,7 +128,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Stream { room, name, source, monitor, audio, audio_app, width, height, fps, bitrate, encoder } => {
+        Cmd::Stream { room, name, source, monitor, audio, audio_app, width, height, fps, bitrate, encoder, relay_saver } => {
             use screenlive_core::procs::{resolve_audio, AudioChoice};
             let server = Server::new(&cli.server)?;
             let room = match room {
@@ -150,7 +153,7 @@ async fn main() -> Result<()> {
                 format: VideoFormat { width, height, fps },
                 bitrate_kbps: bitrate,
                 encoder,
-                relay_saver: true,
+                relay_saver,
             };
             let joined = server.enter(&room, &name).await?;
             let streamer = Streamer::new(&cfg, joined.sig, joined.ice)?;
