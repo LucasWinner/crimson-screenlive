@@ -4,6 +4,7 @@
 pub mod capture;
 pub mod encoder;
 pub mod ice;
+pub mod procs;
 pub mod protocol;
 pub mod signaling;
 pub mod streamer;

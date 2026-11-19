@@ -18,7 +18,7 @@ export SCREENLIVE_SERVER="${SCREENLIVE_SERVER:-http://127.0.0.1:8787}"
 cargo build -q -p screenlive-core || exit 1
 curl -sf "$SCREENLIVE_SERVER/health" >/dev/null || { echo "signaling server not reachable at $SCREENLIVE_SERVER (local: cd signaling && npm run dev)"; exit 1; }
 
-AUDIO=test; [ "$SOURCE" = screen ] && AUDIO=system
+AUDIO=test; [ "$SOURCE" = screen ] && AUDIO=no-discord
 timeout 40 "$CLI" stream --room "$ROOM" --name Alice --source "$SOURCE" --audio "$AUDIO" "$@" >"$LOG" 2>&1 &
 SP=$!
 sleep 3

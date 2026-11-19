@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use gst::prelude::*;
-use screenlive_core::capture::{self, AudioSource, MonitorInfo, VideoFormat, VideoSource};
+use screenlive_core::capture::{self, MonitorInfo, VideoFormat, VideoSource};
 use screenlive_core::encoder;
 use screenlive_core::ice::{self, IceServer};
 use screenlive_core::protocol::{Peer, ServerMsg};
@@ -126,6 +126,25 @@ pub fn system_info() -> SystemInfo {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSources {
+    /// Per-app capture available (Windows 10 build 20348+ / Windows 11).
+    supported: bool,
+    discord_running: bool,
+    apps: Vec<screenlive_core::procs::AppInfo>,
+}
+
+#[tauri::command]
+pub fn audio_sources() -> AudioSources {
+    use screenlive_core::procs;
+    AudioSources {
+        supported: procs::per_app_audio_supported(),
+        discord_running: procs::discord_root_pid().is_some(),
+        apps: procs::list_apps(),
+    }
+}
+
 #[tauri::command]
 pub async fn create_room(app: AppHandle, state: State<'_, AppState>, name: String) -> CmdResult<RoomView> {
     let server = Server::new(&settings::load(&app).server_url).map_err(err)?;
@@ -152,8 +171,16 @@ pub fn start_stream(
     state: State<'_, AppState>,
     monitor_id: Option<u64>,
     quality_preset: String,
-    audio: bool,
 ) -> CmdResult<StreamStatus> {
+    // Resolve the audio choice (PIDs) before locking: it enumerates processes.
+    let choice = settings::load(&app).audio_choice();
+    let audio = screenlive_core::procs::resolve_audio(&choice).map_err(|e| {
+        let msg = e.to_string();
+        match msg.strip_suffix(" is not running") {
+            Some(exe) => format!("o programa {exe} não está aberto. Abra ele ou mude o áudio em ⚙️ Configurações"),
+            None => msg,
+        }
+    })?;
     let shared = state.room.clone();
     let mut guard = shared.lock().unwrap();
     let room = guard.as_mut().ok_or("você não está em uma sala")?;
@@ -171,7 +198,7 @@ pub fn start_stream(
             Some(id) => VideoSource::Monitor(id),
             None => VideoSource::MonitorIndex(0),
         },
-        audio: if audio { AudioSource::System } else { AudioSource::None },
+        audio,
         format,
         bitrate_kbps,
         encoder: None,

@@ -33,7 +33,12 @@ enum Source {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Audio {
+    /// Whole PC except Discord (default).
+    NoDiscord,
+    /// Whole PC, including Discord.
     System,
+    /// Only the program given by --audio-app.
+    App,
     Test,
     None,
 }
@@ -44,6 +49,8 @@ enum Cmd {
     Encoders,
     /// List monitors that can be captured.
     Monitors,
+    /// List programs whose audio can be captured alone, and Discord's PID.
+    Apps,
     /// Share your screen in a room (creates one if --room is omitted).
     Stream {
         #[arg(long)]
@@ -54,8 +61,11 @@ enum Cmd {
         source: Source,
         #[arg(long, default_value_t = 0)]
         monitor: u32,
-        #[arg(long, value_enum, default_value = "system")]
+        #[arg(long, value_enum, default_value = "no-discord")]
         audio: Audio,
+        /// Exe name for --audio app, e.g. game.exe (see `apps`).
+        #[arg(long)]
+        audio_app: Option<String>,
         #[arg(long, default_value_t = 1920)]
         width: u32,
         #[arg(long, default_value_t = 1080)]
@@ -101,13 +111,23 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Apps => {
+            use screenlive_core::procs;
+            println!("per-app audio supported: {}", procs::per_app_audio_supported());
+            println!("discord root pid: {:?}", procs::discord_root_pid());
+            for a in procs::list_apps() {
+                println!("{:<8} {:<28} {}", a.pid, a.exe, a.title);
+            }
+            Ok(())
+        }
         Cmd::Encoders => {
             for e in encoder::available() {
                 println!("{:<16} {}{}", e.factory, e.label, if e.hardware { "" } else { "  [software]" });
             }
             Ok(())
         }
-        Cmd::Stream { room, name, source, monitor, audio, width, height, fps, bitrate, encoder } => {
+        Cmd::Stream { room, name, source, monitor, audio, audio_app, width, height, fps, bitrate, encoder } => {
+            use screenlive_core::procs::{resolve_audio, AudioChoice};
             let server = Server::new(&cli.server)?;
             let room = match room {
                 Some(r) => r,
@@ -119,6 +139,11 @@ async fn main() -> Result<()> {
                     Source::Test => VideoSource::Test,
                 },
                 audio: match audio {
+                    Audio::NoDiscord => resolve_audio(&AudioChoice::AllButDiscord)?,
+                    Audio::App => {
+                        let exe = audio_app.ok_or_else(|| anyhow::anyhow!("--audio app needs --audio-app <exe>"))?;
+                        resolve_audio(&AudioChoice::App(exe))?
+                    }
                     Audio::System => AudioSource::System,
                     Audio::Test => AudioSource::Test,
                     Audio::None => AudioSource::None,

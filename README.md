@@ -6,7 +6,7 @@ Uma alternativa ao "Go Live" do Discord para quando ele não funciona.
 - **Não pesa no jogo:** captura e codificação acontecem na placa de vídeo (AMD AMF, NVIDIA NVENC, Intel Quick Sync). Em teste, 1080p60 usou ~0,2% de CPU.
 - **Direto entre os PCs (P2P):** o vídeo vai de você para seus amigos sem passar por servidor, com baixa latência. Até 4 espectadores por transmissão.
 - **Simples:** crie uma sala, mande o código de 6 letras no Discord, pronto.
-- **Áudio do PC/jogo** junto com a tela.
+- **Áudio do PC/jogo** junto com a tela — por padrão **sem o Discord**, para seus amigos não ouvirem a própria voz de volta. Em ⚙️ Configurações dá para escolher: PC inteiro, PC inteiro menos um programa, ou só um programa (ex.: só o jogo). Requer Windows 11 ou Windows 10 build 20348+; em versões antigas, transmite o PC inteiro.
 
 ## Baixar e usar (Windows 10/11)
 

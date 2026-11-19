@@ -70,19 +70,18 @@
               <span>Tela</span>
               <select id="monitor"></select>
             </label>
-            <div class="row">
-              <label class="field grow">
-                <span>Qualidade</span>
-                <select id="quality">
-                  <option value="720p60">720p · 60 fps (internet fraca)</option>
-                  <option value="1080p60">1080p · 60 fps</option>
-                  <option value="1440p60">1440p · 60 fps (muito upload)</option>
-                </select>
-              </label>
-              <label class="toggle">
-                <input type="checkbox" id="audio" checked />
-                <span>Áudio do PC</span>
-              </label>
+            <label class="field">
+              <span>Qualidade</span>
+              <select id="quality">
+                <option value="720p60">720p · 60 fps (internet fraca)</option>
+                <option value="1080p60">1080p · 60 fps</option>
+                <option value="1440p60">1440p · 60 fps (muito upload)</option>
+              </select>
+            </label>
+            <div class="audio-summary">
+              <span class="muted small">Áudio:</span>
+              <span id="audio-summary" class="small grow"></span>
+              <button type="button" id="change-audio" class="link small">alterar</button>
             </div>
           </div>
           <div id="stream-live" class="live-info" hidden>
@@ -98,6 +97,31 @@
     <dialog id="settings">
       <form method="dialog" class="settings">
         <h2>Configurações</h2>
+
+        <fieldset class="audio-settings">
+          <legend>Áudio da transmissão</legend>
+          <label class="radio"><input type="radio" name="audio-mode" value="all-except" />
+            <span><span>PC inteiro, <b>menos</b> um programa</span>
+              <select id="audio-exclude"></select>
+            </span>
+          </label>
+          <label class="radio"><input type="radio" name="audio-mode" value="app" />
+            <span><span><b>Só</b> um programa</span>
+              <select id="audio-app"></select>
+            </span>
+          </label>
+          <label class="radio"><input type="radio" name="audio-mode" value="all" />
+            <span>PC inteiro (inclui as vozes do Discord)</span>
+          </label>
+          <label class="radio"><input type="radio" name="audio-mode" value="none" />
+            <span>Sem áudio</span>
+          </label>
+          <div class="row">
+            <p id="audio-help" class="muted small grow">Tirar o Discord evita que seus amigos ouçam a própria voz de volta.</p>
+            <button type="button" id="refresh-apps" class="link small">atualizar lista</button>
+          </div>
+        </fieldset>
+
         <label class="field">
           <span>Servidor</span>
           <input id="server-url" spellcheck="false" />

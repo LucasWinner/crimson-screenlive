@@ -62,6 +62,11 @@ pub fn list_monitors() -> Vec<MonitorInfo> {
 pub enum AudioSource {
     /// Everything the computer is playing (game, music, ...).
     System,
+    /// Everything except this process and its children (e.g. Discord, so
+    /// friends don't hear their own voices). Windows 20348+; see `procs`.
+    SystemExcept(u32),
+    /// Only this process and its children (e.g. just the game).
+    App(u32),
     /// Synthetic tone for testing.
     Test,
     None,
@@ -134,8 +139,19 @@ pub fn audio_fragment(src: AudioSource) -> Option<String> {
         AudioSource::Test => "audiotestsrc is-live=true wave=ticks volume=0.3".to_owned(),
         #[cfg(windows)]
         AudioSource::System => "wasapi2src loopback=true low-latency=true".to_owned(),
+        #[cfg(windows)]
+        AudioSource::SystemExcept(pid) => format!(
+            "wasapi2src loopback=true low-latency=true loopback-mode=exclude-process-tree loopback-target-pid={pid}"
+        ),
+        #[cfg(windows)]
+        AudioSource::App(pid) => format!(
+            "wasapi2src loopback=true low-latency=true loopback-mode=include-process-tree loopback-target-pid={pid}"
+        ),
+        // TODO(linux): per-app capture via PipeWire node targeting.
         #[cfg(not(windows))]
-        AudioSource::System => "pulsesrc device=@DEFAULT_MONITOR@".to_owned(),
+        AudioSource::System | AudioSource::SystemExcept(_) | AudioSource::App(_) => {
+            "pulsesrc device=@DEFAULT_MONITOR@".to_owned()
+        }
     };
     Some(format!(
         "{raw} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 \
@@ -158,8 +174,10 @@ mod tests {
         let spec = encoder::pick(Some("x264enc")).expect("x264enc available");
         let v = video_fragment(&VideoSource::Test, &spec, &fmt()).unwrap();
         gst::parse::bin_from_description(&v, true).unwrap_or_else(|e| panic!("{e}: {v}"));
-        let a = audio_fragment(AudioSource::Test).unwrap();
-        gst::parse::bin_from_description(&a, true).unwrap_or_else(|e| panic!("{e}: {a}"));
+        for src in [AudioSource::Test, AudioSource::System, AudioSource::SystemExcept(4), AudioSource::App(4)] {
+            let a = audio_fragment(src).unwrap();
+            gst::parse::bin_from_description(&a, true).unwrap_or_else(|e| panic!("{e}: {a}"));
+        }
 
         #[cfg(windows)]
         for spec in encoder::available() {

@@ -8,7 +8,12 @@ interface Monitor { id: number; name: string; width: number; height: number; pri
 interface SystemInfo { monitors: Monitor[]; encoder: string | null; hardware: boolean }
 interface StreamStatus { active: boolean; encoder: string | null; viewers: number; relayed: number; error: string | null }
 interface WatchStatus { active: boolean; streamerId: string | null; streamerName: string | null; fps: number; relayed: boolean; ended: string | null }
-interface Settings { nickname: string; serverUrl: string; monitorId: number | null; quality: string; audio: boolean }
+interface Settings {
+  nickname: string; serverUrl: string; monitorId: number | null; quality: string;
+  audioMode: "all-except" | "app" | "all" | "none"; audioExclude: string; audioApp: string;
+}
+interface AppInfo { pid: number; exe: string; title: string }
+interface AudioSources { supported: boolean; discordRunning: boolean; apps: AppInfo[] }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -25,7 +30,12 @@ const ui = {
   people: $("people"),
   monitor: $<HTMLSelectElement>("monitor"),
   quality: $<HTMLSelectElement>("quality"),
-  audio: $<HTMLInputElement>("audio"),
+  audioSummary: $("audio-summary"),
+  changeAudio: $("change-audio"),
+  audioExclude: $<HTMLSelectElement>("audio-exclude"),
+  audioApp: $<HTMLSelectElement>("audio-app"),
+  audioHelp: $("audio-help"),
+  refreshApps: $("refresh-apps"),
   streamForm: $("stream-form"),
   streamLive: $("stream-live"),
   streamStats: $("stream-stats"),
@@ -228,16 +238,80 @@ async function toggleStream() {
   }
   settings.monitorId = ui.monitor.value ? Number(ui.monitor.value) : null;
   settings.quality = ui.quality.value;
-  settings.audio = ui.audio.checked;
-  void persist();
+  await persist(); // the backend reads the audio choice from saved settings
   const s = await run(ui.toggleStream, () =>
     invoke<StreamStatus>("start_stream", {
       monitorId: settings.monitorId,
       qualityPreset: settings.quality,
-      audio: settings.audio,
     }),
   );
   if (s) renderStream(s);
+}
+
+// ---- audio source settings
+
+let audioInfo: AudioSources | null = null;
+
+function exeLabel(exe: string) {
+  const app = audioInfo?.apps.find((a) => a.exe.toLowerCase() === exe.toLowerCase());
+  if (/^discord/i.test(exe)) return "Discord (vozes da call)";
+  return app ? app.title : exe.replace(/.exe$/i, "");
+}
+
+function renderAudioSummary() {
+  const m = settings.audioMode;
+  ui.audioSummary.textContent =
+    m === "none" ? "desligado"
+    : m === "all" ? "PC inteiro"
+    : m === "app" ? `só ${exeLabel(settings.audioApp)}`
+    : `PC inteiro, menos ${/^discord/i.test(settings.audioExclude) ? "o Discord" : exeLabel(settings.audioExclude)}`;
+}
+
+function option(value: string, text: string) {
+  const o = document.createElement("option");
+  o.value = value;
+  o.textContent = text;
+  return o;
+}
+
+function selectMode(mode: Settings["audioMode"]) {
+  const r = document.querySelector<HTMLInputElement>(`input[name="audio-mode"][value="${mode}"]`);
+  if (r) r.checked = true;
+  syncAudioInputs();
+}
+
+function syncAudioInputs() {
+  const mode = document.querySelector<HTMLInputElement>('input[name="audio-mode"]:checked')?.value;
+  ui.audioExclude.disabled = mode !== "all-except";
+  ui.audioApp.disabled = mode !== "app";
+}
+
+async function loadAudioSources() {
+  try {
+    audioInfo = await invoke<AudioSources>("audio_sources");
+  } catch (e) {
+    toast(friendly(e));
+    return;
+  }
+  const apps = audioInfo.apps.map((a) => option(a.exe, `${a.title}  (${a.exe})`));
+  // "Exclude" always offers Discord first, even when it is closed right now.
+  ui.audioExclude.replaceChildren(option("Discord.exe", "Discord (vozes da call)"), ...apps.map((o) => o.cloneNode(true) as HTMLOptionElement));
+  ui.audioApp.replaceChildren(...apps);
+  // Keep saved picks selectable even if that program is closed right now.
+  for (const [sel, exe] of [[ui.audioExclude, settings.audioExclude], [ui.audioApp, settings.audioApp]] as const) {
+    if (exe && ![...sel.options].some((o) => o.value.toLowerCase() === exe.toLowerCase())) {
+      sel.append(option(exe, `${exe.replace(/.exe$/i, "")} (fechado agora)`));
+    }
+    const match = [...sel.options].find((o) => o.value.toLowerCase() === exe.toLowerCase());
+    if (match) sel.value = match.value;
+  }
+  if (!ui.audioApp.options.length) ui.audioApp.append(option("", "nenhum programa aberto"));
+  const perApp = document.querySelectorAll<HTMLInputElement>('input[name="audio-mode"][value="all-except"], input[name="audio-mode"][value="app"]');
+  perApp.forEach((r) => (r.disabled = !audioInfo!.supported));
+  ui.audioHelp.textContent = audioInfo.supported
+    ? "Tirar o Discord evita que seus amigos ouçam a própria voz de volta. Para jogos, \"Só um programa\" deixa só o som do jogo."
+    : "Seu Windows não permite escolher programas (precisa do Windows 11 ou Windows 10 atualizado). Será transmitido o PC inteiro.";
+  syncAudioInputs();
 }
 
 // ---- wiring
@@ -267,10 +341,19 @@ ui.leave.onclick = async () => {
 ui.toggleStream.onclick = toggleStream;
 ui.stopWatch.onclick = () => invoke("stop_watch");
 $("fullscreen").onclick = () => invoke("toggle_fullscreen").catch((e) => toast(friendly(e)));
-ui.openSettings.onclick = () => {
+function openSettings() {
   ui.serverUrl.value = settings.serverUrl;
+  const radio = document.querySelector<HTMLInputElement>(`input[name="audio-mode"][value="${settings.audioMode}"]`);
+  if (radio) radio.checked = true;
+  void loadAudioSources();
   ui.settingsDialog.showModal();
-};
+}
+ui.openSettings.onclick = openSettings;
+ui.changeAudio.onclick = openSettings;
+ui.refreshApps.onclick = () => void loadAudioSources();
+document.querySelectorAll<HTMLInputElement>('input[name="audio-mode"]').forEach((r) => (r.onchange = syncAudioInputs));
+ui.audioApp.onchange = () => selectMode("app");
+ui.audioExclude.onchange = () => selectMode("all-except");
 ui.settingsDialog.addEventListener("close", () => {
   if (ui.settingsDialog.returnValue !== "save") return;
   const url = ui.serverUrl.value.trim().replace(/\/+$/, "");
@@ -279,6 +362,12 @@ ui.settingsDialog.addEventListener("close", () => {
     return;
   }
   settings.serverUrl = url;
+  const mode = document.querySelector<HTMLInputElement>('input[name="audio-mode"]:checked')?.value;
+  if (mode) settings.audioMode = mode as Settings["audioMode"];
+  if (ui.audioExclude.value) settings.audioExclude = ui.audioExclude.value;
+  if (ui.audioApp.value) settings.audioApp = ui.audioApp.value;
+  if (settings.audioMode === "app" && !settings.audioApp) settings.audioMode = "all-except";
+  renderAudioSummary();
   void persist();
   toast("Configurações salvas.", true);
 });
@@ -300,7 +389,7 @@ async function init() {
   settings = await invoke<Settings>("get_settings");
   ui.nickname.value = settings.nickname;
   ui.quality.value = settings.quality;
-  ui.audio.checked = settings.audio;
+  renderAudioSummary();
 
   const info = await invoke<SystemInfo>("system_info");
   ui.monitor.replaceChildren(

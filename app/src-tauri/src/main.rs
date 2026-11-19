@@ -43,6 +43,7 @@ fn main() {
             settings::get_settings,
             settings::save_settings,
             room::system_info,
+            room::audio_sources,
             room::create_room,
             room::join_room,
             room::leave_room,
