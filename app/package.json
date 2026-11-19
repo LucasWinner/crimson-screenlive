@@ -1,0 +1,22 @@
+{
+  "name": "crimson-screenlive-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "vite:dev": "vite",
+    "vite:build": "tsc --noEmit && vite build",
+    "tauri": "node scripts/tauri.mjs",
+    "dev": "node scripts/tauri.mjs dev",
+    "bundle-gstreamer": "node scripts/bundle-gstreamer.mjs",
+    "build": "node scripts/bundle-gstreamer.mjs && node scripts/tauri.mjs build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.5"
+  }
+}

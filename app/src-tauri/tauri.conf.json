@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Crimson ScreenLive",
+  "version": "0.1.0",
+  "identifier": "com.crimson.screenlive",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "npm run vite:dev",
+    "beforeBuildCommand": "npm run vite:build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Crimson ScreenLive",
+        "width": 440,
+        "height": 720,
+        "minWidth": 380,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": {
+      "gstreamer/bin/*": "./",
+      "gstreamer/plugins/*": "gstreamer/plugins/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["PortugueseBR", "English"]
+      }
+    },
+    "shortDescription": "Transmissão de tela entre amigos",
+    "publisher": "Crimson",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
+  }
+}

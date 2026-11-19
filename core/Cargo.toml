@@ -1,0 +1,30 @@
+[package]
+name = "screenlive-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Capture, hardware encode and WebRTC transport for Crimson ScreenLive"
+
+[lib]
+name = "screenlive_core"
+
+[[bin]]
+name = "screenlive-cli"
+path = "src/bin/cli.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+env_logger = "0.11"
+futures-util = "0.3"
+gst = { package = "gstreamer", version = "0.25" }
+gst-sdp = { package = "gstreamer-sdp", version = "0.25" }
+gst-video = { package = "gstreamer-video", version = "0.25" }
+gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
+log = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+url = "2"

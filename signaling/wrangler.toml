@@ -1,0 +1,17 @@
+name = "crimson-screenlive-signaling"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+# Free plan requires SQLite-backed Durable Objects.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+# Optional secrets (set with `npx wrangler secret put <NAME>`):
+#   TURN_KEY_ID         - Cloudflare Realtime TURN key id
+#   TURN_KEY_API_TOKEN  - Cloudflare Realtime TURN key API token
+# Without them, /ice returns STUN only (works for most home networks).

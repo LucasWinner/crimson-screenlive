@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crimson ScreenLive</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <span>Crimson <b>ScreenLive</b></span>
+      </div>
+      <button id="open-settings" class="icon-btn" title="Configurações" aria-label="Configurações">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.5 7.5 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.5 7.5 0 0 0-1.7 1l-2.4-1-2 3.4L6.6 11a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.5 7.5 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.5 7.5 0 0 0 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
+      </button>
+    </header>
+
+    <main>
+      <!-- Welcome -->
+      <section id="welcome" class="screen">
+        <h1>Transmita sua tela para os amigos</h1>
+        <p class="muted">Crie uma sala e mande o código no Discord, ou entre com o código de alguém.</p>
+
+        <label class="field">
+          <span>Seu apelido</span>
+          <input id="nickname" maxlength="32" placeholder="Ex: Crimson" autocomplete="off" />
+        </label>
+
+        <button id="create-room" class="btn primary block">Criar sala</button>
+
+        <div class="divider"><span>ou entre numa sala</span></div>
+
+        <form id="join-form" class="join">
+          <input id="room-code" maxlength="7" placeholder="KX7-P2Q" autocomplete="off" spellcheck="false" aria-label="Código da sala" />
+          <button class="btn" type="submit">Entrar</button>
+        </form>
+      </section>
+
+      <!-- Room -->
+      <section id="room" class="screen" hidden>
+        <div class="card room-head">
+          <div>
+            <div class="label">Código da sala</div>
+            <button id="copy-code" class="code" title="Copiar código"><span id="code-text">------</span>
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11z"/></svg>
+            </button>
+          </div>
+          <button id="leave" class="btn ghost">Sair</button>
+        </div>
+
+        <div id="watching" class="card watching" hidden>
+          <div class="live-dot"></div>
+          <div class="grow">
+            <div>Assistindo <b id="watch-name"></b></div>
+            <div class="muted small" id="watch-stats">Conectando…</div>
+          </div>
+          <button id="fullscreen" class="btn ghost small" title="Tela cheia">Tela cheia</button>
+          <button id="stop-watch" class="btn ghost small">Parar</button>
+        </div>
+
+        <h2>Na sala</h2>
+        <ul id="people" class="people"></ul>
+
+        <h2>Sua transmissão</h2>
+        <div class="card stream">
+          <div id="stream-form">
+            <label class="field">
+              <span>Tela</span>
+              <select id="monitor"></select>
+            </label>
+            <div class="row">
+              <label class="field grow">
+                <span>Qualidade</span>
+                <select id="quality">
+                  <option value="720p60">720p · 60 fps (internet fraca)</option>
+                  <option value="1080p60">1080p · 60 fps</option>
+                  <option value="1440p60">1440p · 60 fps (muito upload)</option>
+                </select>
+              </label>
+              <label class="toggle">
+                <input type="checkbox" id="audio" checked />
+                <span>Áudio do PC</span>
+              </label>
+            </div>
+          </div>
+          <div id="stream-live" class="live-info" hidden>
+            <span class="badge live">AO VIVO</span>
+            <span id="stream-stats"></span>
+          </div>
+          <button id="toggle-stream" class="btn primary block">Transmitir</button>
+          <p id="encoder-info" class="muted small center"></p>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="settings">
+      <form method="dialog" class="settings">
+        <h2>Configurações</h2>
+        <label class="field">
+          <span>Servidor</span>
+          <input id="server-url" spellcheck="false" />
+        </label>
+        <p class="muted small">Endereço do servidor de salas. Só mude se alguém te passar outro.</p>
+        <div class="row end">
+          <button class="btn ghost" value="cancel">Cancelar</button>
+          <button class="btn primary" value="save" id="save-settings">Salvar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
