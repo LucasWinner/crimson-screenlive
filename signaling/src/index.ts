@@ -54,8 +54,9 @@ const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
 const CODE_RE = /^[A-HJ-NP-Z2-9]{6}$/;
 /** Client-reported RTP bytes exclude UDP/SRTP/TURN headers; pad the estimate. */
 const OVERHEAD = 1.1;
-/** One report covers ~1 min of at most 4 viewers; anything bigger is bogus. */
-const MAX_REPORT_BYTES = 5e9;
+/** One report covers ~15 s of at most 4 viewers; cap per-report delta. */
+const MAX_REPORT_BYTES = 250_000_000;
+const MIN_REPORT_INTERVAL_MS = 5000;
 const GB = 1024 ** 3;
 const PUBLIC_STUN = [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] }];
 
@@ -188,6 +189,7 @@ export default {
     }
 
     if (url.pathname === "/usage" && request.method === "GET") {
+      if (!(await authorized(request, env))) return json({ error: "invalid app key" }, 401);
       const { month, bytes } = await usage(env);
       const exactGb = (bytes * OVERHEAD) / GB;
       return json({
@@ -219,11 +221,22 @@ export default {
  * One Durable Object per room. Uses the WebSocket Hibernation API so an idle
  * room costs nothing; per-socket state lives in the socket attachment.
  */
+interface SocketState extends Peer {
+  lastTurnReportAt?: number;
+}
+
+function publicPeer(p: SocketState): Peer {
+  return { id: p.id, name: p.name, streaming: p.streaming };
+}
+
 export class Room {
-  constructor(
-    private readonly ctx: DurableObjectState,
-    private readonly env: Env,
-  ) {}
+  private readonly ctx: DurableObjectState;
+  private readonly env: Env;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    this.ctx = ctx;
+    this.env = env;
+  }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -240,13 +253,15 @@ export class Room {
 
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
-    const peer: Peer = { id: randomString(10), name, streaming: false };
+    const state: SocketState = { id: randomString(10), name, streaming: false };
+    const peer = publicPeer(state);
     const others = sockets
-      .map((ws) => ws.deserializeAttachment() as Peer | null)
-      .filter((p): p is Peer => p !== null);
+      .map((ws) => ws.deserializeAttachment() as SocketState | null)
+      .filter((p): p is SocketState => p !== null)
+      .map(publicPeer);
 
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment(peer);
+    server.serializeAttachment(state);
 
     server.send(JSON.stringify({ type: "welcome", id: peer.id, peers: others, ...ice }));
     this.broadcast({ type: "peer-joined", peer }, peer.id);
@@ -255,7 +270,7 @@ export class Room {
   }
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
-    const me = ws.deserializeAttachment() as Peer | null;
+    const me = ws.deserializeAttachment() as SocketState | null;
     if (!me) return;
     const size = typeof raw === "string" ? raw.length : raw.byteLength;
     if (typeof raw !== "string" || size > MAX_MESSAGE_BYTES) {
@@ -285,7 +300,7 @@ export class Room {
       case "stream": {
         me.streaming = msg.streaming === true;
         ws.serializeAttachment(me);
-        this.broadcast({ type: "peer-updated", peer: me }, me.id);
+        this.broadcast({ type: "peer-updated", peer: publicPeer(me) }, me.id);
         return;
       }
       case "turn-usage": {
@@ -293,6 +308,12 @@ export class Room {
         if (!Number.isFinite(bytes) || bytes <= 0 || bytes > MAX_REPORT_BYTES) {
           return this.sendError(ws, "invalid turn-usage");
         }
+        const now = Date.now();
+        if (me.lastTurnReportAt && now - me.lastTurnReportAt < MIN_REPORT_INTERVAL_MS) {
+          return this.sendError(ws, "turn-usage reported too frequently");
+        }
+        me.lastTurnReportAt = now;
+        ws.serializeAttachment(me);
         await usageStub(this.env).fetch("https://usage/add", { method: "POST", body: JSON.stringify({ bytes }) });
         return;
       }
@@ -352,10 +373,11 @@ export class Room {
 
 /** Single global counter of estimated TURN bytes, bucketed by UTC month. */
 export class Usage {
-  constructor(
-    private readonly ctx: DurableObjectState,
-    _env: Env,
-  ) {}
+  private readonly ctx: DurableObjectState;
+
+  constructor(ctx: DurableObjectState, _env: Env) {
+    this.ctx = ctx;
+  }
 
   private static month(): string {
     return new Date().toISOString().slice(0, 7); // YYYY-MM

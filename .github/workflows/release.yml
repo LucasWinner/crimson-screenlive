@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build & Publish Windows Installer
+    runs-on: windows-latest
+    env:
+      GST_VERSION: "1.28.8"
+      GST_ROOT: "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64"
+      SCREENLIVE_APP_KEY: ${{ secrets.SCREENLIVE_APP_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Verify required secrets
+        shell: pwsh
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+            throw "TAURI_SIGNING_PRIVATE_KEY secret is required to sign updater artifacts."
+          }
+      - name: Install GStreamer MSVC x86_64
+        shell: pwsh
+        run: |
+          $exe = "$env:RUNNER_TEMP\gstreamer.exe"
+          Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.exe" -OutFile $exe
+          $p = Start-Process -FilePath $exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/TYPE=full" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "GStreamer installer failed with exit code $($p.ExitCode)" }
+      - run: npm --prefix app ci
+      - name: Build installer & updater signature
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:GST_ROOT\bin;$env:PATH"
+          npm --prefix app run build
+      - name: Prepare release assets & latest.json
+        shell: pwsh
+        run: |
+          $pkg = Get-Content app/package.json -Raw | ConvertFrom-Json
+          $ver = $pkg.version
+          $tag = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "v$ver" }
+          $nsisDir = "target/release/bundle/nsis"
+          $srcExe = "$nsisDir/Crimson ScreenLive_${ver}_x64-setup.exe"
+          $srcSig = "$srcExe.sig"
+          if (-not (Test-Path $srcExe)) { throw "Missing installer: $srcExe" }
+          if (-not (Test-Path $srcSig)) { throw "Missing updater signature: $srcSig" }
+
+          $outDir = "release-assets"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $assetName = "CrimsonScreenLive_${ver}_x64-setup.exe"
+          Copy-Item $srcExe "$outDir/$assetName"
+          Copy-Item $srcSig "$outDir/$assetName.sig"
+
+          $sig = (Get-Content "$outDir/$assetName.sig" -Raw).Trim()
+          $manifest = [ordered]@{
+            version = $ver
+            notes = "Crimson ScreenLive $tag"
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $sig
+                url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$assetName"
+              }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 4 | Set-Content -Path "$outDir/latest.json" -Encoding utf8
+          echo "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: |
+            release-assets/*

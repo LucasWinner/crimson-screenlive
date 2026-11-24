@@ -80,11 +80,15 @@ bob.send({ type: "ping" });
 await bob.next("pong");
 
 // TURN usage accounting (tiny amount so running against prod is harmless).
-const before = await (await fetch(`${base}/usage`)).json();
+const usageNoKey = await fetch(`${base}/usage`);
+assert.equal(usageNoKey.status, 401, "GET /usage without key must be 401");
+const before = await (await fetch(`${base}/usage`, { headers: auth })).json();
 bob.send({ type: "turn-usage", bytes: 1000 });
 bob.send({ type: "turn-usage", bytes: -5 });
 assert.match((await bob.next("error")).message, /invalid turn-usage/);
-const after = await (await fetch(`${base}/usage`)).json();
+bob.send({ type: "turn-usage", bytes: 1000 });
+assert.match((await bob.next("error")).message, /too frequently/);
+const after = await (await fetch(`${base}/usage`, { headers: auth })).json();
 assert.ok(after.usedGb >= before.usedGb && typeof after.capGb === "number", "usage endpoint");
 if (process.env.EXPECT_CAPPED) {
   const carol = await connect(code, "Carol");

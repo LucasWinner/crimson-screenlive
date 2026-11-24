@@ -14,6 +14,8 @@ pub enum VideoSource {
     MonitorIndex(u32),
     /// A whole monitor by the stable id from [`list_monitors`].
     Monitor(u64),
+    /// A single window by its native handle (HWND on Windows, WGC capture).
+    Window(u64),
     /// Synthetic moving test pattern; useful for testing without a screen.
     Test,
 }
@@ -98,19 +100,22 @@ pub fn video_fragment(src: &VideoSource, enc: &EncoderSpec, fmt: &VideoFormat) -
              ! videoconvert ! videoscale add-borders=true \
              ! capsfilter caps=\"video/x-raw,format={pix},width={w},height={h}\""
         ),
-        VideoSource::MonitorIndex(idx) => monitor_fragment(&format!("monitor-index={idx}"), enc, w, h, fps)?,
-        VideoSource::Monitor(id) => monitor_fragment(&format!("monitor-handle={id}"), enc, w, h, fps)?,
+        VideoSource::MonitorIndex(idx) => capture_fragment(&format!("monitor-index={idx}"), enc, w, h, fps)?,
+        VideoSource::Monitor(id) => capture_fragment(&format!("monitor-handle={id}"), enc, w, h, fps)?,
+        VideoSource::Window(hwnd) => {
+            capture_fragment(&format!("capture-api=wgc window-handle={hwnd}"), enc, w, h, fps)?
+        }
     })
 }
 
 #[cfg(windows)]
-fn monitor_fragment(select: &str, enc: &EncoderSpec, w: u32, h: u32, fps: u32) -> Result<String> {
+fn capture_fragment(select: &str, enc: &EncoderSpec, w: u32, h: u32, fps: u32) -> Result<String> {
     // Capture and scale entirely on the GPU; frames only leave VRAM if the
     // encoder can't take D3D11 textures (CPU fallback).
     let gpu = format!(
         "d3d11screencapturesrc {select} show-cursor=true \
          ! video/x-raw(memory:D3D11Memory),framerate={fps}/1 \
-         ! d3d11convert add-borders=true \
+         ! d3d11convert add-borders=true gamma-mode=remap primaries-mode=fast \
          ! capsfilter caps=\"video/x-raw(memory:D3D11Memory),format=NV12,width={w},height={h}\""
     );
     let pix = pixel_format(enc);
@@ -124,7 +129,7 @@ fn monitor_fragment(select: &str, enc: &EncoderSpec, w: u32, h: u32, fps: u32) -
 }
 
 #[cfg(not(windows))]
-fn monitor_fragment(_select: &str, _enc: &EncoderSpec, _w: u32, _h: u32, _fps: u32) -> Result<String> {
+fn capture_fragment(_select: &str, _enc: &EncoderSpec, _w: u32, _h: u32, _fps: u32) -> Result<String> {
     // TODO(linux): request a ScreenCast session through xdg-desktop-portal
     // (ashpd) and capture with `pipewiresrc fd=.. path=..`.
     bail!("screen capture on Linux is not implemented yet; use --source test")
@@ -136,7 +141,7 @@ pub fn downscale_fragment(src: &VideoSource, enc: &EncoderSpec, w: u32, h: u32) 
     let on_gpu = cfg!(windows) && !matches!(src, VideoSource::Test) && enc.memory == Memory::D3D11;
     if on_gpu {
         format!(
-            "d3d11convert add-borders=true \
+            "d3d11convert add-borders=true gamma-mode=remap primaries-mode=fast \
              ! capsfilter caps=\"video/x-raw(memory:D3D11Memory),format=NV12,width={w},height={h}\""
         )
     } else {
@@ -171,7 +176,7 @@ pub fn audio_fragment(src: AudioSource) -> Option<String> {
     };
     Some(format!(
         "{raw} ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 \
-         ! opusenc bitrate=128000 frame-size=10 audio-type=generic"
+         ! opusenc bitrate=128000 frame-size=10 audio-type=generic inband-fec=true packet-loss-percentage=10"
     ))
 }
 
@@ -201,6 +206,8 @@ mod tests {
         for spec in encoder::available() {
             let v = video_fragment(&VideoSource::MonitorIndex(0), &spec, &fmt()).unwrap();
             gst::parse::bin_from_description(&v, true).unwrap_or_else(|e| panic!("{}: {e}: {v}", spec.factory));
+            let w = video_fragment(&VideoSource::Window(1), &spec, &fmt()).unwrap();
+            gst::parse::bin_from_description(&w, true).unwrap_or_else(|e| panic!("{}: {e}: {w}", spec.factory));
         }
     }
 }

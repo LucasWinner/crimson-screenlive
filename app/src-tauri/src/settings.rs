@@ -28,6 +28,9 @@ pub struct Settings {
     pub codec: String,
     /// Manual bitrate override in kbps (None = automatic).
     pub bitrate_kbps: Option<u32>,
+    /// Preferred viewer playback volume (0.0..=2.0, default 1.0).
+    pub watch_volume: f64,
+    pub watch_muted: bool,
 }
 
 impl Default for Settings {
@@ -43,6 +46,8 @@ impl Default for Settings {
             audio_app: String::new(),
             codec: "auto".into(),
             bitrate_kbps: None,
+            watch_volume: 1.0,
+            watch_muted: false,
         }
     }
 }
@@ -106,6 +111,11 @@ pub fn save_settings(app: AppHandle, mut settings: Settings) -> Result<(), Strin
         settings.codec = "auto".into();
     }
     settings.bitrate_kbps = settings.bitrate_kbps.map(|b| b.clamp(1000, 30_000));
+    settings.watch_volume = if settings.watch_volume.is_finite() {
+        settings.watch_volume.clamp(0.0, 2.0)
+    } else {
+        1.0
+    };
     let p = path(&app).ok_or("no config directory")?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;

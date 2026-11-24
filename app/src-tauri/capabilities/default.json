@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Main window: core IPC and events only.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "updater:default", "process:default"]
 }

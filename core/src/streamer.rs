@@ -6,7 +6,7 @@
 //! own RTP payloader, so switching tiers keeps its RTP stream continuous.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::{Context, Result};
@@ -26,6 +26,8 @@ pub struct StreamConfig {
     pub audio: AudioSource,
     pub format: VideoFormat,
     pub bitrate_kbps: u32,
+    /// Automatically lower bitrate temporarily if a viewer experiences packet loss.
+    pub auto_bitrate: bool,
     pub codec: Codec,
     pub encoder: Option<String>,
     /// Move TURN-relayed viewers to a cheaper 720p stream (off by default:
@@ -40,6 +42,7 @@ impl Default for StreamConfig {
             audio: AudioSource::System,
             format: VideoFormat { width: 1920, height: 1080, fps: 60 },
             bitrate_kbps: 7000,
+            auto_bitrate: true,
             codec: Codec::Auto,
             encoder: None,
             relay_saver: false,
@@ -120,6 +123,10 @@ struct Inner {
     relay_saver: AtomicBool,
     relay_bytes: AtomicU64,
     next_peer_seq: AtomicU64,
+    target_bitrate_kbps: u32,
+    current_bitrate_kbps: AtomicU32,
+    auto_bitrate: bool,
+    low_loss_streak: AtomicU32,
 }
 
 impl Drop for Inner {
@@ -134,6 +141,8 @@ pub struct ViewerInfo {
     /// None while still connecting.
     pub relayed: Option<bool>,
     pub reduced_quality: bool,
+    pub rtt_ms: Option<f64>,
+    pub loss_pct: Option<f64>,
 }
 
 pub struct Streamer {
@@ -226,9 +235,17 @@ impl Streamer {
                 relay_saver: AtomicBool::new(relay_saver),
                 relay_bytes: AtomicU64::new(0),
                 next_peer_seq: AtomicU64::new(1),
+                target_bitrate_kbps: cfg.bitrate_kbps,
+                current_bitrate_kbps: AtomicU32::new(cfg.bitrate_kbps),
+                auto_bitrate: cfg.auto_bitrate,
+                low_loss_streak: AtomicU32::new(0),
             }),
             encoder: spec,
         })
+    }
+
+    pub fn current_bitrate_kbps(&self) -> u32 {
+        self.inner.current_bitrate_kbps.load(Ordering::Relaxed)
     }
 
     pub fn pipeline(&self) -> &gst::Pipeline {
@@ -299,15 +316,22 @@ impl Streamer {
     }
 
     /// Call about once a second: checks each viewer's network path, moves
-    /// relayed viewers to the low tier, and accumulates relayed bytes.
+    /// relayed viewers to the low tier, adapts bitrate on sustained packet loss,
+    /// and accumulates relayed bytes.
     pub fn tick(&self) -> Vec<ViewerInfo> {
         let snapshot: Vec<(String, gst::Element)> =
             self.inner.peers.lock().unwrap().iter().map(|(id, p)| (id.clone(), p.webrtc.clone())).collect();
         let mut out = Vec::new();
+        let mut worst_loss: Option<f64> = None;
+
         for (id, w) in snapshot {
             let stats = webrtc::stats(&w);
             let relayed = stats.as_ref().and_then(webrtc::is_relayed);
             let bytes = stats.as_ref().map(webrtc::bytes_sent).unwrap_or(0);
+            let link = stats.as_ref().map(webrtc::link_stats).unwrap_or_default();
+            if let Some(loss) = link.loss_pct {
+                worst_loss = Some(worst_loss.map_or(loss, |cur| cur.max(loss)));
+            }
 
             let needs_switch = {
                 let mut peers = self.inner.peers.lock().unwrap();
@@ -331,7 +355,43 @@ impl Streamer {
             }
             let peers = self.inner.peers.lock().unwrap();
             if let Some(p) = peers.get(&id) {
-                out.push(ViewerInfo { id, relayed: p.relayed, reduced_quality: p.tier == Tier::Low });
+                out.push(ViewerInfo {
+                    id,
+                    relayed: p.relayed,
+                    reduced_quality: p.tier == Tier::Low,
+                    rtt_ms: link.rtt_ms,
+                    loss_pct: link.loss_pct,
+                });
+            }
+        }
+
+        if self.inner.auto_bitrate {
+            if let Some(loss) = worst_loss {
+                let cur = self.inner.current_bitrate_kbps.load(Ordering::Relaxed);
+                let target = self.inner.target_bitrate_kbps;
+                let floor = (target / 2).max(1500).min(target);
+                if loss > 5.0 {
+                    self.inner.low_loss_streak.store(0, Ordering::Relaxed);
+                    let next = ((cur as f64 * 0.85).round() as u32).max(floor);
+                    if next < cur {
+                        log::info!("packet loss {loss:.1}%: stepping bitrate {cur} -> {next} kbps");
+                        self.inner.current_bitrate_kbps.store(next, Ordering::Relaxed);
+                        encoder::set_bitrate(&self.inner.high.encoder, &self.inner.spec, next);
+                    }
+                } else if loss < 1.0 && cur < target {
+                    let streak = self.inner.low_loss_streak.fetch_add(1, Ordering::Relaxed) + 1;
+                    if streak >= 5 {
+                        self.inner.low_loss_streak.store(0, Ordering::Relaxed);
+                        let next = ((cur as f64 * 1.10).round() as u32).max(cur + 250).min(target);
+                        if next > cur {
+                            log::info!("network healthy: recovering bitrate {cur} -> {next} kbps");
+                            self.inner.current_bitrate_kbps.store(next, Ordering::Relaxed);
+                            encoder::set_bitrate(&self.inner.high.encoder, &self.inner.spec, next);
+                        }
+                    }
+                } else {
+                    self.inner.low_loss_streak.store(0, Ordering::Relaxed);
+                }
             }
         }
         out

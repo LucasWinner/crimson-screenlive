@@ -18,6 +18,14 @@
     </header>
 
     <main>
+      <div id="update-banner" class="card update-banner" hidden>
+        <div class="grow">
+          <div><b id="update-title">Nova versão disponível</b></div>
+          <div id="update-subtitle" class="muted small"></div>
+        </div>
+        <button id="install-update" class="btn primary small">Atualizar</button>
+      </div>
+
       <!-- Welcome -->
       <section id="welcome" class="screen">
         <h1>Transmita sua tela para os amigos</h1>
@@ -64,6 +72,11 @@
             <span class="badge relay">VIA SERVIDOR</span>
             <span>Sem conexão direta: o vídeo passa pelo servidor (usa a cota do TURN).</span>
           </div>
+          <div class="watch-audio">
+            <button id="watch-mute" type="button" class="btn ghost small" title="Silenciar">Som</button>
+            <input id="watch-volume" type="range" min="0" max="150" step="5" value="100" aria-label="Volume" />
+            <span id="watch-volume-label" class="muted small">100%</span>
+          </div>
         </div>
 
         <h2>Na sala</h2>
@@ -72,10 +85,13 @@
         <h2>Sua transmissão</h2>
         <div class="card stream">
           <div id="stream-form">
-            <label class="field">
-              <span>Tela</span>
+            <div class="field">
+              <div class="row-between">
+                <span>Tela ou janela</span>
+                <button type="button" id="refresh-sources" class="link small">atualizar lista</button>
+              </div>
               <select id="monitor"></select>
-            </label>
+            </div>
             <div class="row">
               <label class="field grow">
                 <span>Resolução</span>
@@ -121,6 +137,9 @@
           <div id="stream-relay" class="relay-note" hidden>
             <span class="badge relay">VIA SERVIDOR</span>
             <span id="stream-relay-text"></span>
+          </div>
+          <div id="stream-discord-warn" class="relay-note" hidden>
+            <span>Discord foi aberto depois da transmissão — pare e inicie novamente para excluir as vozes da call.</span>
           </div>
           <button id="toggle-stream" class="btn primary block">Transmitir</button>
           <p id="encoder-info" class="muted small center"></p>
@@ -176,6 +195,10 @@
         </label>
         <p class="muted small">Endereço do servidor de salas. Só mude se alguém te passar outro.</p>
         <p id="settings-error" class="form-error" hidden></p>
+        <div class="row-between">
+          <button type="button" id="check-update" class="link small">Verificar atualizações</button>
+          <span id="app-version" class="muted small"></span>
+        </div>
         <div class="row end">
           <button class="btn ghost" value="cancel">Cancelar</button>
           <button class="btn primary" value="save" id="save-settings">Salvar</button>

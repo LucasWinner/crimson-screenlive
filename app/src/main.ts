@@ -1,24 +1,49 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 
 // ---- types mirrored from src-tauri/src/room.rs and settings.rs
 interface Peer { id: string; name: string; streaming: boolean }
 interface RoomView { code: string; me: string; name: string; peers: Peer[] }
 interface Monitor { id: number; name: string; width: number; height: number; primary: boolean }
+interface WindowItem { hwnd: number; title: string; exe: string }
 interface SystemInfo {
   monitors: Monitor[];
+  windows: WindowItem[];
   encoder: string | null;
   hardware: boolean;
   av1Encoder: string | null;
   h264Encoder: string | null;
   h264Hardware: boolean;
 }
-interface StreamStatus { active: boolean; encoder: string | null; viewers: number; relayed: number; error: string | null }
-interface WatchStatus { active: boolean; streamerId: string | null; streamerName: string | null; fps: number; relayed: boolean; ended: string | null }
+interface StreamStatus {
+  active: boolean;
+  encoder: string | null;
+  viewers: number;
+  relayed: number;
+  bitrateKbps: number;
+  rttMs: number | null;
+  lossPct: number | null;
+  discordStartedLate: boolean;
+  error: string | null;
+}
+interface WatchStatus {
+  active: boolean;
+  streamerId: string | null;
+  streamerName: string | null;
+  fps: number;
+  relayed: boolean;
+  rttMs: number | null;
+  lossPct: number | null;
+  ended: string | null;
+}
 interface Settings {
   nickname: string; serverUrl: string; monitorId: number | null; quality: string;
   audioMode: "all-except" | "app" | "all" | "none"; audioExclude: string; audioApp: string;
   codec: "auto" | "av1" | "h264"; bitrateKbps: number | null;
+  watchVolume: number; watchMuted: boolean;
 }
 interface AppInfo { pid: number; exe: string; title: string }
 interface AudioSources { supported: boolean; discordRunning: boolean; apps: AppInfo[] }
@@ -37,13 +62,18 @@ const ui = {
   leave: $("leave"),
   people: $("people"),
   monitor: $<HTMLSelectElement>("monitor"),
+  refreshSources: $("refresh-sources"),
   resolution: $<HTMLSelectElement>("resolution"),
   fps: $<HTMLSelectElement>("fps"),
   bitrate: $<HTMLSelectElement>("bitrate"),
   qualityHint: $("quality-hint"),
   watchRelay: $("watch-relay"),
+  watchMute: $<HTMLButtonElement>("watch-mute"),
+  watchVolume: $<HTMLInputElement>("watch-volume"),
+  watchVolumeLabel: $("watch-volume-label"),
   streamRelay: $("stream-relay"),
   streamRelayText: $("stream-relay-text"),
+  streamDiscordWarn: $("stream-discord-warn"),
   audioSummary: $("audio-summary"),
   changeAudio: $("change-audio"),
   audioExclude: $<HTMLSelectElement>("audio-exclude"),
@@ -60,6 +90,12 @@ const ui = {
   watchName: $("watch-name"),
   watchStats: $("watch-stats"),
   stopWatch: $("stop-watch"),
+  updateBanner: $("update-banner"),
+  updateTitle: $("update-title"),
+  updateSubtitle: $("update-subtitle"),
+  installUpdate: $<HTMLButtonElement>("install-update"),
+  checkUpdate: $<HTMLButtonElement>("check-update"),
+  appVersion: $("app-version"),
   settingsDialog: $<HTMLDialogElement>("settings"),
   settingsForm: document.querySelector<HTMLFormElement>("#settings form")!,
   settingsError: $("settings-error"),
@@ -78,8 +114,11 @@ let settings: Settings = {
   audioApp: "",
   codec: "auto",
   bitrateKbps: null,
+  watchVolume: 1.0,
+  watchMuted: false,
 };
 let sysInfo: SystemInfo | null = null;
+let pendingUpdate: Update | null = null;
 let room: RoomView | null = null;
 let streaming = false;
 let watchingId: string | null = null;
@@ -143,7 +182,17 @@ function showRoom(view: RoomView | null) {
   if (!view) {
     streaming = false;
     watchingId = null;
-    renderStream({ active: false, encoder: null, viewers: 0, relayed: 0, error: null });
+    renderStream({
+      active: false,
+      encoder: null,
+      viewers: 0,
+      relayed: 0,
+      bitrateKbps: 0,
+      rttMs: null,
+      lossPct: null,
+      discordStartedLate: false,
+      error: null,
+    });
     ui.watching.hidden = true;
     return;
   }
@@ -204,18 +253,28 @@ function renderPeople() {
   }
 }
 
+function formatHealth(rttMs: number | null, lossPct: number | null): string {
+  const parts: string[] = [];
+  if (rttMs !== null && rttMs > 0) parts.push(`${Math.round(rttMs)} ms`);
+  if (lossPct !== null && lossPct >= 1) parts.push(`${lossPct.toFixed(0)}% perda`);
+  return parts.join(" · ");
+}
+
 function renderStream(s: StreamStatus) {
   const was = streaming;
   streaming = s.active;
   ui.streamForm.hidden = s.active;
   ui.streamLive.hidden = !s.active;
   ui.streamRelay.hidden = !(s.active && s.relayed > 0);
+  ui.streamDiscordWarn.hidden = !(s.active && s.discordStartedLate);
   ui.toggleStream.textContent = s.active ? "Parar transmissão" : "Transmitir";
   ui.toggleStream.classList.toggle("primary", !s.active);
   ui.toggleStream.classList.toggle("danger", s.active);
   if (s.active) {
     const v = s.viewers === 1 ? "1 espectador" : `${s.viewers} espectadores`;
-    ui.streamStats.textContent = `${v} · ${s.encoder ?? ""}`;
+    const mbps = s.bitrateKbps > 0 ? ` · ${(s.bitrateKbps / 1000).toFixed(1).replace(".", ",")} Mbps` : "";
+    const health = s.viewers > 0 ? formatHealth(s.rttMs, s.lossPct) : "";
+    ui.streamStats.textContent = `${v} · ${s.encoder ?? ""}${mbps}${health ? ` · ${health}` : ""}`;
     ui.streamRelayText.textContent =
       s.relayed === 1 ? "1 espectador está recebendo pelo servidor (usa a cota do TURN)."
       : `${s.relayed} espectadores estão recebendo pelo servidor (usa a cota do TURN).`;
@@ -231,7 +290,13 @@ function renderWatch(w: WatchStatus) {
   ui.watchRelay.hidden = !(w.active && w.relayed);
   if (w.active) {
     ui.watchName.textContent = w.streamerName ?? "";
-    ui.watchStats.textContent = w.fps > 0 ? `${w.fps} fps${w.relayed ? "" : " · conexão direta"}` : "Conectando…";
+    if (w.fps > 0) {
+      const health = formatHealth(w.rttMs, w.lossPct);
+      const path = w.relayed ? "" : " · conexão direta";
+      ui.watchStats.textContent = `${w.fps} fps${health ? ` · ${health}` : ""}${path}`;
+    } else {
+      ui.watchStats.textContent = "Conectando…";
+    }
   }
   if (w.ended && w.ended !== "closed") {
     toast(w.ended === "ended" ? "A transmissão terminou." : `Erro ao assistir: ${friendly(w.ended)}`);
@@ -270,13 +335,22 @@ async function toggleStream() {
     await run(ui.toggleStream, () => invoke("stop_stream"));
     return;
   }
-  settings.monitorId = ui.monitor.value ? Number(ui.monitor.value) : null;
+  const selected = ui.monitor.value;
+  let monitorId: number | null = null;
+  let windowHwnd: number | null = null;
+  if (selected.startsWith("window:")) {
+    windowHwnd = Number(selected.slice("window:".length));
+  } else if (selected.startsWith("monitor:")) {
+    monitorId = Number(selected.slice("monitor:".length));
+  }
+  if (monitorId !== null) settings.monitorId = monitorId;
   settings.quality = `${ui.resolution.value}p${ui.fps.value}`;
   settings.bitrateKbps = ui.bitrate.value === "auto" ? null : Number(ui.bitrate.value);
   await persist(); // the backend reads the audio and codec choice from saved settings
   const s = await run(ui.toggleStream, () =>
     invoke<StreamStatus>("start_stream", {
-      monitorId: settings.monitorId,
+      monitorId,
+      windowHwnd,
       qualityPreset: settings.quality,
       bitrateKbps: settings.bitrateKbps,
     }),
@@ -407,6 +481,117 @@ ui.copyCode.onclick = async () => {
     toast(`Código: ${formatCode(room.code)}`);
   }
 };
+function renderWatchVolume() {
+  const pct = Math.round(settings.watchVolume * 100);
+  ui.watchVolume.value = String(pct);
+  ui.watchVolumeLabel.textContent = settings.watchMuted ? "Mudo" : `${pct}%`;
+  ui.watchMute.textContent = settings.watchMuted ? "Ativar som" : "Mudo";
+}
+
+let volTimer: number | undefined;
+function pushWatchVolume(immediate = false) {
+  renderWatchVolume();
+  clearTimeout(volTimer);
+  const send = () =>
+    void invoke("set_watch_volume", { volume: settings.watchVolume, muted: settings.watchMuted }).catch((e) =>
+      console.warn("set_watch_volume failed", e),
+    );
+  if (immediate) send();
+  else volTimer = window.setTimeout(send, 120);
+}
+
+ui.watchVolume.oninput = () => {
+  settings.watchVolume = Number(ui.watchVolume.value) / 100;
+  if (settings.watchVolume > 0 && settings.watchMuted) settings.watchMuted = false;
+  pushWatchVolume(false);
+};
+ui.watchVolume.onchange = () => pushWatchVolume(true);
+ui.watchMute.onclick = () => {
+  settings.watchMuted = !settings.watchMuted;
+  pushWatchVolume(true);
+};
+
+async function refreshCaptureSources() {
+  sysInfo = await invoke<SystemInfo>("system_info");
+  const prev = ui.monitor.value;
+  const groups: HTMLOptGroupElement[] = [];
+
+  const monGroup = document.createElement("optgroup");
+  monGroup.label = "Telas inteiras";
+  for (const [i, m] of sysInfo.monitors.entries()) {
+    monGroup.append(
+      option(`monitor:${m.id}`, `Tela ${i + 1}: ${m.name} (${m.width}×${m.height})${m.primary ? " · principal" : ""}`),
+    );
+  }
+  groups.push(monGroup);
+
+  if (sysInfo.windows.length > 0) {
+    const winGroup = document.createElement("optgroup");
+    winGroup.label = "Janelas";
+    for (const w of sysInfo.windows) {
+      const label = w.title.length > 48 ? `${w.title.slice(0, 47)}…` : w.title;
+      winGroup.append(option(`window:${w.hwnd}`, `${label} (${w.exe.replace(/\.exe$/i, "")})`));
+    }
+    groups.push(winGroup);
+  }
+
+  ui.monitor.replaceChildren(...groups);
+  if (prev && [...ui.monitor.options].some((o) => o.value === prev)) {
+    ui.monitor.value = prev;
+  } else if (settings.monitorId && sysInfo.monitors.some((m) => m.id === settings.monitorId)) {
+    ui.monitor.value = `monitor:${settings.monitorId}`;
+  }
+  renderEncoderInfo();
+  renderQualityHint();
+}
+
+async function checkForUpdate(manual = false) {
+  try {
+    const update = await check({ timeout: 10000 });
+    if (!update) {
+      if (manual) toast("Você já está na versão mais recente.", true);
+      return;
+    }
+    pendingUpdate = update;
+    ui.updateTitle.textContent = `Nova versão v${update.version} disponível`;
+    ui.updateSubtitle.textContent = update.body?.split("\n")[0]?.trim() || "Clique para baixar e atualizar automaticamente.";
+    ui.updateBanner.hidden = false;
+    if (manual && ui.settingsDialog.open) ui.settingsDialog.close("cancel");
+  } catch (e) {
+    if (manual) toast(`Não foi possível verificar atualizações: ${friendly(e)}`);
+  }
+}
+
+ui.installUpdate.onclick = async () => {
+  if (!pendingUpdate) return;
+  ui.installUpdate.disabled = true;
+  let downloaded = 0;
+  let total = 0;
+  try {
+    await pendingUpdate.downloadAndInstall((ev) => {
+      if (ev.event === "Started") {
+        total = ev.data.contentLength ?? 0;
+        ui.updateSubtitle.textContent = "Baixando atualização…";
+      } else if (ev.event === "Progress") {
+        downloaded += ev.data.chunkLength;
+        if (total > 0) {
+          const pct = Math.min(100, Math.round((downloaded / total) * 100));
+          ui.updateSubtitle.textContent = `Baixando… ${pct}%`;
+        }
+      } else if (ev.event === "Finished") {
+        ui.updateSubtitle.textContent = "Instalando… o app será reiniciado.";
+      }
+    });
+    await relaunch();
+  } catch (e) {
+    ui.installUpdate.disabled = false;
+    toast(`Falha ao atualizar: ${friendly(e)}`);
+  }
+};
+
+ui.refreshSources.onclick = () => void refreshCaptureSources().catch((e) => toast(friendly(e)));
+ui.checkUpdate.onclick = () => void checkForUpdate(true);
+
 ui.leave.onclick = async () => {
   await invoke("leave_room").catch((e) => toast(friendly(e)));
   showRoom(null);
@@ -496,23 +681,13 @@ async function init() {
   }
   renderQualityHint();
   renderAudioSummary();
+  renderWatchVolume();
+  ui.appVersion.textContent = `v${await getVersion()}`;
 
-  sysInfo = await invoke<SystemInfo>("system_info");
-  ui.monitor.replaceChildren(
-    ...sysInfo.monitors.map((m, i) => {
-      const o = document.createElement("option");
-      o.value = String(m.id);
-      o.textContent = `Tela ${i + 1}: ${m.name} (${m.width}×${m.height})${m.primary ? " · principal" : ""}`;
-      return o;
-    }),
-  );
-  if (settings.monitorId && sysInfo.monitors.some((m) => m.id === settings.monitorId)) {
-    ui.monitor.value = String(settings.monitorId);
-  }
-  renderEncoderInfo();
-  renderQualityHint();
+  await refreshCaptureSources();
 
   (settings.nickname ? ui.roomCode : ui.nickname).focus();
+  void checkForUpdate(false);
 }
 
 const ready = init().catch((e) => toast(friendly(e)));

@@ -1,7 +1,7 @@
 //! Viewer: webrtcbin -> decodebin (hardware decode when available) -> native video window.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -71,6 +71,9 @@ pub struct Viewer {
     sig: SignalingHandle,
     video_frames: Arc<AtomicU64>,
     audio_buffers: Arc<AtomicU64>,
+    volume: Arc<Mutex<f64>>,
+    muted: Arc<AtomicBool>,
+    volume_elem: Arc<Mutex<Option<gst::Element>>>,
     stopped: AtomicBool,
 }
 
@@ -104,19 +107,57 @@ impl Viewer {
 
         let video_frames = Arc::new(AtomicU64::new(0));
         let audio_buffers = Arc::new(AtomicU64::new(0));
-        let (vf, ab) = (video_frames.clone(), audio_buffers.clone());
+        let volume = Arc::new(Mutex::new(1.0f64));
+        let muted = Arc::new(AtomicBool::new(false));
+        let volume_elem: Arc<Mutex<Option<gst::Element>>> = Arc::new(Mutex::new(None));
+        let (vf, ab, vol_val, mute_val, vol_el) =
+            (video_frames.clone(), audio_buffers.clone(), volume.clone(), muted.clone(), volume_elem.clone());
         let pipe_weak = pipeline.downgrade();
         webrtc.connect_pad_added(move |_, pad| {
             if pad.direction() != gst::PadDirection::Src {
                 return;
             }
             let Some(pipeline) = pipe_weak.upgrade() else { return };
-            if let Err(e) = on_incoming_stream(&pipeline, pad, headless, vf.clone(), ab.clone()) {
+            if let Err(e) = on_incoming_stream(
+                &pipeline,
+                pad,
+                headless,
+                vf.clone(),
+                ab.clone(),
+                vol_val.clone(),
+                mute_val.clone(),
+                vol_el.clone(),
+            ) {
                 log::error!("could not play incoming stream: {e:#}");
             }
         });
 
-        Ok(Self { pipeline, webrtc, streamer, sig, video_frames, audio_buffers, stopped: AtomicBool::new(false) })
+        Ok(Self {
+            pipeline,
+            webrtc,
+            streamer,
+            sig,
+            video_frames,
+            audio_buffers,
+            volume,
+            muted,
+            volume_elem,
+            stopped: AtomicBool::new(false),
+        })
+    }
+
+    pub fn set_volume(&self, volume: f64, muted: bool) {
+        let clamped = volume.clamp(0.0, 2.0);
+        *self.volume.lock().unwrap() = clamped;
+        self.muted.store(muted, Ordering::Relaxed);
+        if let Some(el) = self.volume_elem.lock().unwrap().as_ref() {
+            el.set_property("volume", clamped);
+            el.set_property("mute", muted);
+        }
+    }
+
+    pub fn link_stats(&self) -> webrtc::LinkStats {
+        webrtc::stats(&self.webrtc).map(|s| webrtc::link_stats(&s)).unwrap_or_default()
     }
 
     pub fn stats(&self) -> ViewStats {
@@ -276,12 +317,16 @@ fn configure_fullscreen_sink(elem: &gst::Element) {
     encoder::set_if(elem, "fullscreen-on-alt-enter", "true");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn on_incoming_stream(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
     headless: bool,
     video_frames: Arc<AtomicU64>,
     audio_buffers: Arc<AtomicU64>,
+    volume: Arc<Mutex<f64>>,
+    muted: Arc<AtomicBool>,
+    volume_elem: Arc<Mutex<Option<gst::Element>>>,
 ) -> Result<()> {
     let decodebin = gst::ElementFactory::make("decodebin").build()?;
     let pipe_weak = pipeline.downgrade();
@@ -297,8 +342,12 @@ fn on_incoming_stream(
             let sink = if headless { "fakesink sync=false" } else { "autovideosink" };
             (format!("queue max-size-buffers=3 ! {sink}"), video_frames.clone(), true)
         } else if media.starts_with("audio/") {
-            let sink = if headless { "fakesink sync=false" } else { "autoaudiosink" };
-            (format!("queue ! audioconvert ! audioresample ! {sink}"), audio_buffers.clone(), false)
+            let d = if headless {
+                "queue ! audioconvert ! audioresample ! fakesink sync=false".to_owned()
+            } else {
+                "queue ! volume name=watch-vol ! audioconvert ! audioresample ! autoaudiosink".to_owned()
+            };
+            (d, audio_buffers.clone(), false)
         } else {
             log::warn!("ignoring unknown stream {media}");
             return;
@@ -307,6 +356,13 @@ fn on_incoming_stream(
             let bin = gst::parse::bin_from_description(&desc, true)?;
             if is_video && !headless {
                 bin.connect_deep_element_added(|_, _, elem| configure_fullscreen_sink(elem));
+            }
+            if !is_video && !headless {
+                if let Some(vol) = bin.by_name("watch-vol") {
+                    vol.set_property("volume", *volume.lock().unwrap());
+                    vol.set_property("mute", muted.load(Ordering::Relaxed));
+                    *volume_elem.lock().unwrap() = Some(vol);
+                }
             }
             pipeline.add(&bin)?;
             bin.sync_state_with_parent()?;

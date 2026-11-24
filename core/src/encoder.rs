@@ -209,6 +209,21 @@ pub fn build(spec: &EncoderSpec, s: &EncoderSettings) -> Result<gst::Element> {
     Ok(enc)
 }
 
+/// Adjusts target bitrate dynamically while the pipeline is running.
+pub fn set_bitrate(encoder: &gst::Element, spec: &EncoderSpec, bitrate_kbps: u32) {
+    if spec.factory == "openh264enc" {
+        let bps = (bitrate_kbps as u64 * 1000).min(u32::MAX as u64).to_string();
+        set_if(encoder, "bitrate", &bps);
+        set_if(encoder, "max-bitrate", &bps);
+    } else {
+        let br = bitrate_kbps.to_string();
+        set_if(encoder, "bitrate", &br);
+        if spec.factory.starts_with("amf") {
+            set_if(encoder, "max-bitrate", &br);
+        }
+    }
+}
+
 /// Asks the encoder for an immediate keyframe (with SPS/PPS), e.g. when a new viewer joins.
 pub fn request_keyframe(encoder: &gst::Element) {
     let event = gst_video::UpstreamForceKeyUnitEvent::builder().all_headers(true).build();
@@ -234,8 +249,11 @@ mod tests {
             assert_eq!(auto.codec, VideoCodec::Av1);
             let elem = build(&av1, &EncoderSettings { bitrate_kbps: 6000, fps: 60, keyframe_secs: 2 }).unwrap();
             assert_eq!(elem.factory().unwrap().name(), av1.factory);
+            set_bitrate(&elem, &av1, 4500);
         } else {
             assert_eq!(auto.codec, VideoCodec::H264);
         }
+        let elem_h264 = build(&h264, &EncoderSettings { bitrate_kbps: 6000, fps: 60, keyframe_secs: 2 }).unwrap();
+        set_bitrate(&elem_h264, &h264, 4000);
     }
 }

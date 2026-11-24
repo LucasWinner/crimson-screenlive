@@ -27,6 +27,7 @@ struct Cli {
 #[derive(Clone, Copy, ValueEnum)]
 enum Source {
     Screen,
+    Window,
     Test,
 }
 
@@ -55,6 +56,8 @@ enum Cmd {
     Encoders,
     /// List monitors that can be captured.
     Monitors,
+    /// List windows that can be captured.
+    Windows,
     /// List programs whose audio can be captured alone, and Discord's PID.
     Apps,
     /// Share your screen in a room (creates one if --room is omitted).
@@ -67,6 +70,9 @@ enum Cmd {
         source: Source,
         #[arg(long, default_value_t = 0)]
         monitor: u32,
+        /// Window handle (HWND) for --source window (see `windows`).
+        #[arg(long)]
+        window: Option<u64>,
         #[arg(long, value_enum, default_value = "no-discord")]
         audio: Audio,
         /// Exe name for --audio app, e.g. game.exe (see `apps`).
@@ -123,6 +129,12 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Windows => {
+            for w in screenlive_core::procs::list_windows() {
+                println!("{:<12} {:<28} {}", w.hwnd, w.exe, w.title);
+            }
+            Ok(())
+        }
         Cmd::Apps => {
             use screenlive_core::procs;
             println!("per-app audio supported: {}", procs::per_app_audio_supported());
@@ -138,7 +150,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Stream { room, name, source, monitor, audio, audio_app, width, height, fps, bitrate, codec, encoder, relay_saver } => {
+        Cmd::Stream { room, name, source, monitor, window, audio, audio_app, width, height, fps, bitrate, codec, encoder, relay_saver } => {
             use screenlive_core::procs::{resolve_audio, AudioChoice};
             let server = Server::new(&cli.server)?;
             let room = match room {
@@ -148,6 +160,10 @@ async fn main() -> Result<()> {
             let cfg = StreamConfig {
                 video: match source {
                     Source::Screen => VideoSource::MonitorIndex(monitor),
+                    Source::Window => {
+                        let hwnd = window.ok_or_else(|| anyhow::anyhow!("--source window needs --window <HWND>"))?;
+                        VideoSource::Window(hwnd)
+                    }
                     Source::Test => VideoSource::Test,
                 },
                 audio: match audio {
@@ -162,6 +178,7 @@ async fn main() -> Result<()> {
                 },
                 format: VideoFormat { width, height, fps },
                 bitrate_kbps: bitrate,
+                auto_bitrate: true,
                 codec: match codec {
                     CodecArg::Auto => Codec::Auto,
                     CodecArg::Av1 => Codec::Av1,

@@ -5,6 +5,8 @@ mod room;
 mod settings;
 
 use room::AppState;
+use tauri::menu::MenuBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
 /// Installed builds ship GStreamer next to the exe (DLLs) with plugins in
@@ -38,8 +40,61 @@ fn main() {
         std::process::exit(1);
     }
 
+    fn show_main(app: &tauri::AppHandle) {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.unminimize();
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+    }
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
+        .setup(|app| {
+            let menu = MenuBuilder::new(app)
+                .text("open", "Abrir Crimson ScreenLive")
+                .separator()
+                .text("quit", "Sair")
+                .build()?;
+            let mut tray = TrayIconBuilder::with_id("main")
+                .tooltip("Crimson ScreenLive")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => show_main(app),
+                    "quit" => {
+                        app.state::<AppState>().shutdown();
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    }
+                    | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } = event
+                    {
+                        show_main(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray = tray.icon(icon);
+            }
+            tray.build(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" && window.app_handle().state::<AppState>().is_media_active() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             settings::get_settings,
             settings::save_settings,
@@ -53,6 +108,7 @@ fn main() {
             room::watch,
             room::stop_watch,
             room::toggle_fullscreen,
+            room::set_watch_volume,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Crimson ScreenLive")

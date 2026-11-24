@@ -28,7 +28,7 @@ const PLUGINS = [
   "d3d11", "d3d12", "amfcodec", "nvcodec", "qsv", "mediafoundation", "openh264", "dav1d",
   "videoconvertscale", "videoparsersbad", "videotestsrc",
   // audio
-  "wasapi2", "audioconvert", "audioresample", "opus", "audiotestsrc",
+  "wasapi2", "audioconvert", "audioresample", "volume", "opus", "audiotestsrc",
   // webrtc
   "rtp", "rtpmanager", "rsrtp", "srtp", "dtls", "nice", "webrtc",
 ];

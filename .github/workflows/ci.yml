@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  signaling:
+    name: Signaling Worker (TS + Unit Tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: signaling/package-lock.json
+      - run: npm --prefix signaling ci
+      - run: npm --prefix signaling run typecheck
+      - run: npm --prefix signaling test
+
+  frontend:
+    name: Desktop Frontend (TypeScript + Vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm --prefix app ci
+      - run: npm --prefix app run vite:build
+
+  rust-windows:
+    name: Rust Core & Tauri (Windows)
+    runs-on: windows-latest
+    env:
+      GST_VERSION: "1.28.8"
+      GST_ROOT: "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install GStreamer MSVC x86_64
+        shell: pwsh
+        run: |
+          $exe = "$env:RUNNER_TEMP\gstreamer.exe"
+          Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc/gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.exe" -OutFile $exe
+          $p = Start-Process -FilePath $exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/TYPE=full" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "GStreamer installer failed with exit code $($p.ExitCode)" }
+      - run: npm --prefix app ci
+      - run: npm --prefix app run vite:build
+      - name: Clippy
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:GST_ROOT\bin;$env:PATH"
+          cargo clippy --workspace --all-targets -- -D warnings
+      - name: Cargo test
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:GST_ROOT\bin;$env:PATH"
+          cargo test --workspace

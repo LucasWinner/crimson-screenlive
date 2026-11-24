@@ -13,6 +13,14 @@ pub struct AppInfo {
     pub title: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WindowInfo {
+    /// Native window handle (HWND on Windows).
+    pub hwnd: u64,
+    pub title: String,
+    pub exe: String,
+}
+
 /// Discord flavours whose call audio must never be streamed.
 const DISCORD_EXES: &[&str] = &["discord.exe", "discordptb.exe", "discordcanary.exe"];
 
@@ -37,6 +45,11 @@ pub fn per_app_audio_supported() -> bool {
 /// Visible top-level windowed apps, one entry per process, sorted by title.
 pub fn list_apps() -> Vec<AppInfo> {
     imp::list_apps()
+}
+
+/// Capturable visible top-level windows (non-minimized, non-cloaked), sorted by title.
+pub fn list_windows() -> Vec<WindowInfo> {
+    imp::list_windows()
 }
 
 /// PID of the top Discord process (its children render the call audio), if running.
@@ -116,18 +129,19 @@ pub fn resolve_audio(choice: &AudioChoice) -> anyhow::Result<crate::capture::Aud
 mod imp {
     use std::collections::HashMap;
 
-    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE,
-        WS_EX_TOOLWINDOW,
+        EnumWindows, GetWindowLongW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+        IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
     };
     use windows::core::{w, BOOL};
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
 
-    use super::{AppInfo, DISCORD_EXES, IGNORED_EXES};
+    use super::{AppInfo, WindowInfo, DISCORD_EXES, IGNORED_EXES};
 
     struct Proc {
         exe: String,
@@ -174,7 +188,7 @@ mod imp {
     }
 
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let list = &mut *(lparam.0 as *mut Vec<(u32, String)>);
+        let list = &mut *(lparam.0 as *mut Vec<(u64, u32, String)>);
         if !IsWindowVisible(hwnd).as_bool() {
             return true.into();
         }
@@ -188,19 +202,42 @@ mod imp {
         }
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        list.push((pid, String::from_utf16_lossy(&buf[..n as usize])));
+        list.push((hwnd.0 as usize as u64, pid, String::from_utf16_lossy(&buf[..n as usize])));
         true.into()
     }
 
+    fn is_capturable_window(hwnd: u64) -> bool {
+        let hwnd = HWND(hwnd as usize as *mut core::ffi::c_void);
+        unsafe {
+            if IsIconic(hwnd).as_bool() {
+                return false;
+            }
+            let mut cloaked: u32 = 0;
+            if DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAKED,
+                (&mut cloaked as *mut u32).cast(),
+                std::mem::size_of::<u32>() as u32,
+            )
+            .is_ok()
+                && cloaked != 0
+            {
+                return false;
+            }
+            let mut rect = RECT::default();
+            GetWindowRect(hwnd, &mut rect).is_ok() && (rect.right - rect.left) > 16 && (rect.bottom - rect.top) > 16
+        }
+    }
+
     pub fn list_apps() -> Vec<AppInfo> {
-        let mut windows: Vec<(u32, String)> = Vec::new();
+        let mut windows: Vec<(u64, u32, String)> = Vec::new();
         unsafe {
             let _ = EnumWindows(Some(collect), LPARAM(&mut windows as *mut _ as isize));
         }
         let procs = processes();
         let me = std::process::id();
         let mut by_pid: HashMap<u32, AppInfo> = HashMap::new();
-        for (pid, title) in windows {
+        for (_hwnd, pid, title) in windows {
             let Some(p) = procs.get(&pid) else { continue };
             let exe_l = p.exe.to_lowercase();
             if pid == me || IGNORED_EXES.contains(&exe_l.as_str()) || DISCORD_EXES.contains(&exe_l.as_str()) {
@@ -214,6 +251,31 @@ mod imp {
         let mut apps: Vec<AppInfo> = by_pid.into_values().collect();
         apps.sort_by_key(|a| a.title.to_lowercase());
         apps
+    }
+
+    pub fn list_windows() -> Vec<WindowInfo> {
+        let mut raw: Vec<(u64, u32, String)> = Vec::new();
+        unsafe {
+            let _ = EnumWindows(Some(collect), LPARAM(&mut raw as *mut _ as isize));
+        }
+        let procs = processes();
+        let me = std::process::id();
+        let mut out: Vec<WindowInfo> = raw
+            .into_iter()
+            .filter_map(|(hwnd, pid, title)| {
+                if pid == me || !is_capturable_window(hwnd) {
+                    return None;
+                }
+                let p = procs.get(&pid)?;
+                let exe_l = p.exe.to_lowercase();
+                if IGNORED_EXES.contains(&exe_l.as_str()) {
+                    return None;
+                }
+                Some(WindowInfo { hwnd, title, exe: p.exe.clone() })
+            })
+            .collect();
+        out.sort_by_key(|w| w.title.to_lowercase());
+        out
     }
 
     pub fn find_root(exe: &str) -> Option<u32> {
@@ -231,11 +293,14 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::AppInfo;
+    use super::{AppInfo, WindowInfo};
     pub fn windows_build() -> u32 {
         0
     }
     pub fn list_apps() -> Vec<AppInfo> {
+        Vec::new()
+    }
+    pub fn list_windows() -> Vec<WindowInfo> {
         Vec::new()
     }
     pub fn discord_root_pid() -> Option<u32> {

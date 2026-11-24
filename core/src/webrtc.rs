@@ -143,6 +143,56 @@ pub fn bytes_sent(stats: &gst::Structure) -> u64 {
         .sum()
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LinkStats {
+    pub rtt_ms: Option<f64>,
+    pub loss_pct: Option<f64>,
+    pub jitter_ms: Option<f64>,
+}
+
+/// Extracts connection health (RTT, packet loss %, jitter) from webrtcbin stats.
+pub fn link_stats(stats: &gst::Structure) -> LinkStats {
+    let mut rtt_ms: Option<f64> = None;
+    let mut loss_pct: Option<f64> = None;
+    let mut jitter_ms: Option<f64> = None;
+
+    for (_, v) in stats.iter() {
+        let Ok(s) = v.get::<gst::Structure>() else { continue };
+        match s.name().as_str() {
+            "remote-inbound-rtp" => {
+                if let Ok(rtt) = s.get::<f64>("round-trip-time") {
+                    if rtt >= 0.0 {
+                        let ms = rtt * 1000.0;
+                        rtt_ms = Some(rtt_ms.map_or(ms, |cur| cur.max(ms)));
+                    }
+                }
+                if let Ok(frac) = s.get::<f64>("fraction-lost") {
+                    if frac >= 0.0 {
+                        let pct = (frac * 100.0).clamp(0.0, 100.0);
+                        loss_pct = Some(loss_pct.map_or(pct, |cur| cur.max(pct)));
+                    }
+                }
+                if let Ok(jit) = s.get::<f64>("jitter") {
+                    if jit >= 0.0 {
+                        let ms = jit * 1000.0;
+                        jitter_ms = Some(jitter_ms.map_or(ms, |cur| cur.max(ms)));
+                    }
+                }
+            }
+            "inbound-rtp" => {
+                if let Ok(jit) = s.get::<f64>("jitter") {
+                    if jit >= 0.0 {
+                        let ms = jit * 1000.0;
+                        jitter_ms = Some(jitter_ms.map_or(ms, |cur| cur.max(ms)));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    LinkStats { rtt_ms, loss_pct, jitter_ms }
+}
+
 /// Turns the first error/EOS on the bus into a Result; logs warnings.
 pub fn check_bus_message(msg: &gst::Message) -> Result<bool> {
     use gst::MessageView;
@@ -205,6 +255,18 @@ mod tests {
         let empty = gst::Structure::new_empty("application/x-webrtc-stats");
         assert_eq!(is_relayed(&empty), None);
         assert_eq!(bytes_sent(&empty), 0);
+        assert_eq!(link_stats(&empty), LinkStats::default());
+
+        let remote_in = gst::Structure::builder("remote-inbound-rtp")
+            .field("round-trip-time", 0.042f64)
+            .field("fraction-lost", 0.025f64)
+            .field("jitter", 0.005f64)
+            .build();
+        let health = gst::Structure::builder("application/x-webrtc-stats").field("r", remote_in).build();
+        assert_eq!(
+            link_stats(&health),
+            LinkStats { rtt_ms: Some(42.0), loss_pct: Some(2.5), jitter_ms: Some(5.0) }
+        );
     }
 
     #[test]

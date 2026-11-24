@@ -26,6 +26,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "windows": {
       "nsis": {
@@ -36,5 +37,16 @@
     "shortDescription": "Transmissão de tela entre amigos",
     "publisher": "Crimson",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU2ODE1NDczMEQxRDVEMTIKUldRU1hSME5jMVNCVnBWR2l5WDhjWHlKVGJOanEwWmpkY2JPdEs5Zk5FZHJYRzloVlp5akpPaU0K",
+      "endpoints": [
+        "https://github.com/LucasWinner/crimson-screenlive/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
