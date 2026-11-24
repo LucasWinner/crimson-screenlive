@@ -92,6 +92,20 @@
                   <option value="30">30</option>
                 </select>
               </label>
+              <label class="field bitrate">
+                <span>Bitrate</span>
+                <select id="bitrate">
+                  <option value="auto">Auto</option>
+                  <option value="2500">2,5 Mbps</option>
+                  <option value="4000">4 Mbps</option>
+                  <option value="6000">6 Mbps</option>
+                  <option value="8000">8 Mbps</option>
+                  <option value="10000">10 Mbps</option>
+                  <option value="12000">12 Mbps</option>
+                  <option value="16000">16 Mbps</option>
+                  <option value="20000">20 Mbps</option>
+                </select>
+              </label>
             </div>
             <p id="quality-hint" class="muted small"></p>
             <div class="audio-summary">
@@ -140,6 +154,20 @@
             <p id="audio-help" class="muted small grow">Tirar o Discord evita que seus amigos ouçam a própria voz de volta.</p>
             <button type="button" id="refresh-apps" class="link small">atualizar lista</button>
           </div>
+        </fieldset>
+
+        <fieldset class="audio-settings">
+          <legend>Codec de vídeo</legend>
+          <label class="radio"><input type="radio" name="video-codec" value="auto" />
+            <span>Automático (AV1 se disponível, senão H.264)</span>
+          </label>
+          <label class="radio"><input type="radio" name="video-codec" value="av1" />
+            <span>AV1 (melhor imagem por Mbps — exige GPU recente)</span>
+          </label>
+          <label class="radio"><input type="radio" name="video-codec" value="h264" />
+            <span>H.264 (máxima compatibilidade)</span>
+          </label>
+          <p id="codec-help" class="muted small"></p>
         </fieldset>
 
         <label class="field">

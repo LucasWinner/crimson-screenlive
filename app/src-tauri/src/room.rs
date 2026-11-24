@@ -100,6 +100,9 @@ pub struct SystemInfo {
     monitors: Vec<MonitorInfo>,
     encoder: Option<String>,
     hardware: bool,
+    av1_encoder: Option<String>,
+    h264_encoder: Option<String>,
+    h264_hardware: bool,
 }
 
 impl Room {
@@ -116,27 +119,39 @@ fn err(e: impl std::fmt::Display) -> String {
 
 /// "<720|1080|1440>p<30|60>" -> format and video bitrate (kbps). 30 fps needs
 /// roughly 2/3 of the bits of 60 fps for the same sharpness.
-fn quality(preset: &str) -> (VideoFormat, u32) {
+/// For AV1, 720p/1080p save a bit of bandwidth (~15%) while 1440p keeps full bitrate for maximum sharpness.
+fn quality(preset: &str, codec: encoder::VideoCodec, bitrate_override: Option<u32>) -> (VideoFormat, u32) {
     let (res, fps) = preset.split_once('p').unwrap_or(("1080", "60"));
     let fps: u32 = if fps == "30" { 30 } else { 60 };
-    let (width, height, kbps60) = match res {
-        "720" => (1280, 720, 4500),
-        "1440" => (2560, 1440, 12000),
-        _ => (1920, 1080, 7000),
+    let (width, height, kbps60) = match (res, codec) {
+        ("720", encoder::VideoCodec::Av1) => (1280, 720, 3800),
+        ("720", encoder::VideoCodec::H264) => (1280, 720, 4500),
+        ("1440", _) => (2560, 1440, 12000),
+        (_, encoder::VideoCodec::Av1) => (1920, 1080, 6000),
+        (_, encoder::VideoCodec::H264) => (1920, 1080, 7000),
     };
-    let kbps = if fps == 30 { kbps60 * 2 / 3 } else { kbps60 };
+    let auto_kbps = if fps == 30 { kbps60 * 2 / 3 } else { kbps60 };
+    let kbps = bitrate_override.map(|b| b.clamp(1000, 30_000)).unwrap_or(auto_kbps);
     (VideoFormat { width, height, fps }, kbps)
 }
 
 #[cfg(test)]
 mod tests {
+    use screenlive_core::encoder::VideoCodec;
+
     #[test]
     fn quality_presets() {
-        let (f, k) = super::quality("1440p30");
+        let (f, k) = super::quality("1440p30", VideoCodec::H264, None);
         assert_eq!((f.width, f.height, f.fps, k), (2560, 1440, 30, 8000));
-        let (f, k) = super::quality("720p60");
+        let (f, k) = super::quality("1440p60", VideoCodec::Av1, None);
+        assert_eq!((f.width, f.height, f.fps, k), (2560, 1440, 60, 12000));
+        let (f, k) = super::quality("1080p60", VideoCodec::Av1, None);
+        assert_eq!((f.width, f.height, f.fps, k), (1920, 1080, 60, 6000));
+        let (f, k) = super::quality("720p60", VideoCodec::H264, None);
         assert_eq!((f.width, f.height, f.fps, k), (1280, 720, 60, 4500));
-        let (f, _) = super::quality("garbage");
+        let (f, k) = super::quality("1080p60", VideoCodec::Av1, Some(9000));
+        assert_eq!((f.width, f.height, f.fps, k), (1920, 1080, 60, 9000));
+        let (f, _) = super::quality("garbage", VideoCodec::H264, None);
         assert_eq!((f.height, f.fps), (1080, 60));
     }
 }
@@ -145,11 +160,16 @@ mod tests {
 
 #[tauri::command]
 pub fn system_info() -> SystemInfo {
-    let best = encoder::pick(None).ok();
+    let best = encoder::pick_for_codec(None, encoder::Codec::Auto).ok();
+    let av1 = encoder::pick_for_codec(None, encoder::Codec::Av1).ok();
+    let h264 = encoder::pick_for_codec(None, encoder::Codec::H264).ok();
     SystemInfo {
         monitors: capture::list_monitors(),
         encoder: best.map(|e| e.label.to_string()),
         hardware: best.is_some_and(|e| e.hardware),
+        av1_encoder: av1.map(|e| e.label.to_string()),
+        h264_encoder: h264.map(|e| e.label.to_string()),
+        h264_hardware: h264.is_some_and(|e| e.hardware),
     }
 }
 
@@ -196,14 +216,25 @@ pub fn start_stream(
     state: State<'_, AppState>,
     monitor_id: Option<u64>,
     quality_preset: String,
+    bitrate_kbps: Option<u32>,
 ) -> CmdResult<StreamStatus> {
-    // Resolve the audio choice (PIDs) before locking: it enumerates processes.
-    let choice = settings::load(&app).audio_choice();
+    // Resolve the audio choice (PIDs) and codec before locking: it enumerates processes.
+    let saved = settings::load(&app);
+    let choice = saved.audio_choice();
+    let codec = saved.codec_choice();
+    let bitrate_override = bitrate_kbps.or(saved.bitrate_kbps);
     let audio = screenlive_core::procs::resolve_audio(&choice).map_err(|e| {
         let msg = e.to_string();
         match msg.strip_suffix(" is not running") {
             Some(exe) => format!("o programa {exe} não está aberto. Abra ele ou mude o áudio em ⚙️ Configurações"),
             None => msg,
+        }
+    })?;
+    let spec = encoder::pick_for_codec(None, codec).map_err(|e| {
+        if codec == encoder::Codec::Av1 {
+            "sua placa de vídeo não tem codificador AV1 por hardware. Mude o codec para Automático ou H.264 em ⚙️ Configurações.".into()
+        } else {
+            format!("{e:#}")
         }
     })?;
     let shared = state.room.clone();
@@ -216,7 +247,7 @@ pub fn start_stream(
         (room.generation, room.sig.clone(), room.ice.clone())
     };
 
-    let (format, bitrate_kbps) = quality(&quality_preset);
+    let (format, bitrate_kbps) = quality(&quality_preset, spec.codec, bitrate_override);
     let monitors = capture::list_monitors();
     let monitor = monitor_id
         .filter(|id| monitors.iter().any(|m| m.id == *id))
@@ -229,7 +260,8 @@ pub fn start_stream(
         audio,
         format,
         bitrate_kbps,
-        encoder: None,
+        codec,
+        encoder: Some(spec.factory.to_string()),
         relay_saver: false,
     };
 

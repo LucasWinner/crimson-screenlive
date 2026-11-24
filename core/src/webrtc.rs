@@ -206,4 +206,114 @@ mod tests {
         assert_eq!(is_relayed(&empty), None);
         assert_eq!(bytes_sent(&empty), 0);
     }
+
+    #[test]
+    fn av1_webrtc_loopback() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        gst::init().unwrap();
+        let Ok(spec) = crate::encoder::pick_for_codec(None, crate::encoder::Codec::Av1) else {
+            return; // skip on machines without hardware AV1 encoder
+        };
+
+        let pipe_s = gst::Pipeline::new();
+        let src = gst::parse::bin_from_description(
+            "videotestsrc is-live=true ! capsfilter caps=\"video/x-raw,format=NV12,width=320,height=240,framerate=30/1\"",
+            true,
+        )
+        .unwrap();
+        let enc = crate::encoder::build(
+            &spec,
+            &crate::encoder::EncoderSettings { bitrate_kbps: 1500, fps: 30, keyframe_secs: 2 },
+        )
+        .unwrap();
+        let pay = gst::parse::bin_from_description(
+            "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=300000000 ! av1parse ! rtpav1pay pt=96 mtu=1200 ! capsfilter caps=\"application/x-rtp,media=video,encoding-name=AV1,payload=96,clock-rate=90000\"",
+            true,
+        )
+        .unwrap();
+        let ws = gst::ElementFactory::make("webrtcbin").build().unwrap();
+        pipe_s.add_many([src.upcast_ref(), &enc, pay.upcast_ref(), &ws]).unwrap();
+        gst::Element::link_many([src.upcast_ref(), &enc, pay.upcast_ref(), &ws]).unwrap();
+
+        let pipe_r = gst::Pipeline::new();
+        let wr = gst::ElementFactory::make("webrtcbin").build().unwrap();
+        pipe_r.add(&wr).unwrap();
+
+        let wr_c = wr.clone();
+        ws.connect("on-ice-candidate", false, move |v| {
+            wr_c.emit_by_name::<()>("add-ice-candidate", &[&v[1].get::<u32>().unwrap(), &v[2].get::<String>().unwrap()]);
+            None
+        });
+        let ws_c = ws.clone();
+        wr.connect("on-ice-candidate", false, move |v| {
+            ws_c.emit_by_name::<()>("add-ice-candidate", &[&v[1].get::<u32>().unwrap(), &v[2].get::<String>().unwrap()]);
+            None
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        ws.connect("on-negotiation-needed", false, move |v| {
+            let w = v[0].get::<gst::Element>().unwrap();
+            let tx = tx.clone();
+            create_offer(&w, move |sdp| {
+                let _ = tx.send(sdp);
+            });
+            None
+        });
+
+        let frames = Arc::new(AtomicU64::new(0));
+        let frames_c = frames.clone();
+        let pipe_r_weak = pipe_r.downgrade();
+        wr.connect_pad_added(move |_, pad| {
+            let Some(pipe_r) = pipe_r_weak.upgrade() else { return };
+            let decodebin = gst::ElementFactory::make("decodebin").build().unwrap();
+            let pipe_r_w2 = pipe_r.downgrade();
+            let fc = frames_c.clone();
+            decodebin.connect_pad_added(move |_, dpad| {
+                let Some(pipe_r) = pipe_r_w2.upgrade() else { return };
+                let bin = gst::parse::bin_from_description("queue max-size-buffers=3 ! fakesink sync=false", true).unwrap();
+                pipe_r.add(&bin).unwrap();
+                bin.sync_state_with_parent().unwrap();
+                let sink = bin.static_pad("sink").unwrap();
+                let f = fc.clone();
+                sink.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                    f.fetch_add(1, Ordering::Relaxed);
+                    gst::PadProbeReturn::Ok
+                });
+                dpad.link(&sink).unwrap();
+            });
+            pipe_r.add(&decodebin).unwrap();
+            decodebin.sync_state_with_parent().unwrap();
+            pad.link(&decodebin.static_pad("sink").unwrap()).unwrap();
+        });
+
+        pipe_r.set_state(gst::State::Playing).unwrap();
+        pipe_s.set_state(gst::State::Playing).unwrap();
+
+        let offer_sdp = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(offer_sdp.contains("AV1/90000"), "SDP should offer AV1: {offer_sdp}");
+        let (tx2, rx2) = std::sync::mpsc::channel::<String>();
+        accept_offer(&wr, &offer_sdp, move |sdp| {
+            let _ = tx2.send(sdp);
+        })
+        .unwrap();
+        let answer_sdp = rx2.recv_timeout(Duration::from_secs(5)).unwrap();
+        accept_answer(&ws, &answer_sdp).unwrap();
+
+        for _ in 0..30 {
+            if frames.load(Ordering::Relaxed) >= 5 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let got = frames.load(Ordering::Relaxed);
+        let s = stats(&ws).unwrap();
+        assert!(got >= 5, "expected decoded AV1 RTP buffers, got {got}");
+        assert!(bytes_sent(&s) > 0, "expected outbound bytes_sent > 0");
+
+        pipe_s.set_state(gst::State::Null).unwrap();
+        pipe_r.set_state(gst::State::Null).unwrap();
+    }
 }

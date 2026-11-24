@@ -3,7 +3,7 @@
 Transmissão de tela entre amigos — leve, gratuita e feita para gameplay.
 Uma alternativa ao "Go Live" do Discord para quando ele não funciona.
 
-- **Não pesa no jogo:** captura e codificação acontecem na placa de vídeo (AMD AMF, NVIDIA NVENC, Intel Quick Sync). Em teste, 1080p60 usou ~0,2% de CPU.
+- **Não pesa no jogo:** captura e codificação acontecem na placa de vídeo (AV1 ou H.264 via AMD AMF, NVIDIA NVENC, Intel Quick Sync). Em teste, 1080p60 usou ~0,2% de CPU.
 - **Direto entre os PCs (P2P):** o vídeo vai de você para seus amigos sem passar por servidor, com baixa latência. Até 4 espectadores por transmissão.
 - **Simples:** crie uma sala, mande o código de 6 letras no Discord, pronto.
 - **Áudio do PC/jogo** junto com a tela — por padrão **sem o Discord**, para seus amigos não ouvirem a própria voz de volta. Em ⚙️ Configurações dá para escolher: PC inteiro, PC inteiro menos um programa, ou só um programa (ex.: só o jogo). Requer Windows 11 ou Windows 10 build 20348+; em versões antigas, transmite o PC inteiro.
@@ -17,15 +17,14 @@ Uma alternativa ao "Go Live" do Discord para quando ele não funciona.
 4. Para transmitir: escolha a tela, a qualidade e clique **Transmitir**.
 5. Para assistir: clique **Assistir** ao lado de quem está **AO VIVO**. O vídeo abre numa janela separada (botão **Tela cheia** no app).
 
-**Qualidade × internet:** escolha resolução (720p/1080p/1440p) e 30 ou 60 FPS. Cada espectador recebe um fluxo próprio, então o seu *upload* precisa de aproximadamente, **por espectador**:
-720p ≈ 3 / 4,5 Mbps · 1080p ≈ 4,7 / 7 Mbps · 1440p ≈ 8 / 12 Mbps (30 / 60 FPS). 30 FPS é ótimo para vídeos e filmes; 60 FPS para jogos.
+**Qualidade × internet:** escolha resolução (720p/1080p/1440p), 30 ou 60 FPS e bitrate (**Auto** ou manual). No modo Auto com AV1 por hardware, 720p/1080p reduzem levemente os dados (~3,8 / 6 Mbps em 60 FPS) enquanto 1440p mantém ~12 Mbps para máxima nitidez; em H.264 são ~4,5 / 7 / 12 Mbps (60 FPS). Cada espectador recebe um fluxo próprio. Em ⚙️ Configurações é possível escolher o codec (**Automático**, **AV1** ou **H.264**).
 
 **Conexão via servidor (TURN):** quando a conexão direta não é possível (4G, CGNAT, redes restritas), o vídeo passa pelo TURN da Cloudflare. A qualidade é a mesma da conexão direta; o app mostra um aviso **VIA SERVIDOR** (em amarelo) para quem assiste e para quem transmite, porque esse tráfego conta na cota do TURN.
 
 ## Como funciona
 
 ```
-App (Tauri + Rust) ──captura GPU──► encoder H.264 por hardware ──► WebRTC ──P2P──► App do amigo (decodifica na GPU)
+App (Tauri + Rust) ──captura GPU──► encoder AV1/H.264 por hardware ──► WebRTC ──P2P──► App do amigo (decodifica na GPU)
           │                                                                    ▲
           └──────── sinalização (salas, SDP/ICE) ── Cloudflare Worker ─────────┘
                     TURN da Cloudflare só quando a conexão direta falha (4G/CGNAT)

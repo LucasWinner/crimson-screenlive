@@ -15,6 +15,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
 
 Third-party components bundled with the installer keep their own licenses:
-GStreamer and its plugins (LGPL-2.1-or-later), OpenH264 (BSD-2-Clause),
-Opus (BSD-3-Clause), libnice (LGPL-2.1/MPL-1.1), OpenSSL (Apache-2.0),
-GLib (LGPL-2.1-or-later), Tauri (MIT/Apache-2.0).
+GStreamer and its plugins (LGPL-2.1-or-later), gst-plugins-rs/rsrtp (MPL-2.0),
+dav1d (BSD-2-Clause), OpenH264 (BSD-2-Clause), Opus (BSD-3-Clause),
+libnice (LGPL-2.1/MPL-1.1), OpenSSL (Apache-2.0), GLib (LGPL-2.1-or-later),
+Tauri (MIT/Apache-2.0).

@@ -15,7 +15,7 @@ use gst::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::capture::{self, AudioSource, VideoFormat, VideoSource};
-use crate::encoder::{self, EncoderSettings, EncoderSpec};
+use crate::encoder::{self, Codec, EncoderSettings, EncoderSpec, VideoCodec};
 use crate::ice::IceServer;
 use crate::protocol::{ClientMsg, Payload, ServerMsg};
 use crate::signaling::SignalingHandle;
@@ -26,6 +26,7 @@ pub struct StreamConfig {
     pub audio: AudioSource,
     pub format: VideoFormat,
     pub bitrate_kbps: u32,
+    pub codec: Codec,
     pub encoder: Option<String>,
     /// Move TURN-relayed viewers to a cheaper 720p stream (off by default:
     /// users preferred full quality; the monthly TURN cap still applies).
@@ -39,6 +40,7 @@ impl Default for StreamConfig {
             audio: AudioSource::System,
             format: VideoFormat { width: 1920, height: 1080, fps: 60 },
             bitrate_kbps: 7000,
+            codec: Codec::Auto,
             encoder: None,
             relay_saver: false,
         }
@@ -50,14 +52,32 @@ pub const RELAY_FORMAT: (u32, u32) = (1280, 720);
 pub const RELAY_KBPS: u32 = 3500;
 pub const MAX_VIEWERS: usize = 4;
 
-const PARSE: &str = "h264parse config-interval=-1";
-const PEER_VIDEO: &str = "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=300000000 \
+const PARSE_H264: &str = "h264parse config-interval=-1";
+const PEER_VIDEO_H264: &str = "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=300000000 \
     ! rtph264pay config-interval=-1 aggregate-mode=zero-latency pt=96 mtu=1200 \
     ! capsfilter caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000\"";
+const PARSE_AV1: &str = "av1parse";
+const PEER_VIDEO_AV1: &str = "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=300000000 \
+    ! rtpav1pay pt=96 mtu=1200 \
+    ! capsfilter caps=\"application/x-rtp,media=video,encoding-name=AV1,payload=96,clock-rate=90000\"";
 const AUDIO_RTP: &str = "rtpopuspay pt=111 \
     ! capsfilter caps=\"application/x-rtp,media=audio,encoding-name=OPUS,payload=111,clock-rate=48000\"";
 /// Per-viewer queue: drop old data instead of building latency on a slow link.
 const PEER_QUEUE: &str = "queue leaky=downstream max-size-buffers=0 max-size-bytes=0 max-size-time=300000000";
+
+fn parse_desc(codec: VideoCodec) -> &'static str {
+    match codec {
+        VideoCodec::H264 => PARSE_H264,
+        VideoCodec::Av1 => PARSE_AV1,
+    }
+}
+
+fn peer_video_desc(codec: VideoCodec) -> &'static str {
+    match codec {
+        VideoCodec::H264 => PEER_VIDEO_H264,
+        VideoCodec::Av1 => PEER_VIDEO_AV1,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tier {
@@ -125,7 +145,7 @@ fn make(factory: &str) -> Result<gst::Element> {
     gst::ElementFactory::make(factory).build().with_context(|| format!("missing element {factory}"))
 }
 
-/// raw_tee -> queue -> [scale] -> encoder -> h264parse -> tee. Syncs state so
+/// raw_tee -> queue -> [scale] -> encoder -> parser -> tee. Syncs state so
 /// it can be added to a running pipeline.
 fn build_tier(
     pipeline: &gst::Pipeline,
@@ -137,7 +157,7 @@ fn build_tier(
     let queue = gst::parse::launch("queue max-size-buffers=2 leaky=downstream")?;
     let scaler = scale.map(|s| gst::parse::bin_from_description(&s, true)).transpose()?;
     let enc = encoder::build(spec, settings)?;
-    let parse = gst::parse::launch(PARSE)?;
+    let parse = gst::parse::launch(parse_desc(spec.codec))?;
     let tee = make("tee")?;
     tee.set_property("allow-not-linked", true);
 
@@ -158,7 +178,7 @@ fn build_tier(
 
 impl Streamer {
     pub fn new(cfg: &StreamConfig, sig: SignalingHandle, ice: Vec<IceServer>) -> Result<Self> {
-        let spec = encoder::pick(cfg.encoder.as_deref())?;
+        let spec = encoder::pick_for_codec(cfg.encoder.as_deref(), cfg.codec)?;
         let pipeline = gst::Pipeline::with_name("streamer");
 
         let vsrc = gst::parse::bin_from_description(&capture::video_fragment(&cfg.video, &spec, &cfg.format)?, true)
@@ -482,7 +502,10 @@ fn add_peer(inner: &Arc<Inner>, id: &str) -> Result<()> {
         Ok(Branch { tee_pad, elem })
     };
     let setup = (|| -> Result<(Branch, Option<Branch>)> {
-        let video = attach(&inner.high.tee, gst::parse::bin_from_description(PEER_VIDEO, true)?.upcast())?;
+        let video = attach(
+            &inner.high.tee,
+            gst::parse::bin_from_description(peer_video_desc(inner.spec.codec), true)?.upcast(),
+        )?;
         let audio = match &inner.atee {
             Some(atee) => match attach(atee, gst::parse::launch(PEER_QUEUE)?) {
                 Ok(a) => Some(a),
@@ -565,8 +588,10 @@ mod tests {
     #[test]
     fn rtp_fragments_parse() {
         gst::init().unwrap();
-        gst::parse::launch(PARSE).unwrap();
-        gst::parse::bin_from_description(PEER_VIDEO, true).unwrap();
+        gst::parse::launch(PARSE_H264).unwrap();
+        gst::parse::bin_from_description(PEER_VIDEO_H264, true).unwrap();
+        gst::parse::launch(PARSE_AV1).unwrap();
+        gst::parse::bin_from_description(PEER_VIDEO_AV1, true).unwrap();
         gst::parse::bin_from_description(&format!("opusenc ! {AUDIO_RTP}"), true).unwrap();
         gst::parse::launch(PEER_QUEUE).unwrap();
     }

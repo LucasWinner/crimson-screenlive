@@ -12,7 +12,7 @@ use screenlive_core::capture::{AudioSource, VideoFormat, VideoSource};
 use screenlive_core::signaling::Server;
 use screenlive_core::streamer::{StreamConfig, Streamer};
 use screenlive_core::viewer::{self, ViewConfig, ViewEnd, Viewer};
-use screenlive_core::encoder;
+use screenlive_core::encoder::{self, Codec};
 
 #[derive(Parser)]
 #[command(about = "Crimson ScreenLive developer CLI")]
@@ -42,9 +42,16 @@ enum Audio {
     None,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum CodecArg {
+    Auto,
+    Av1,
+    H264,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
-    /// List H.264 encoders usable on this machine (best first).
+    /// List video encoders usable on this machine (best first).
     Encoders,
     /// List monitors that can be captured.
     Monitors,
@@ -74,6 +81,9 @@ enum Cmd {
         /// Video bitrate in kbps.
         #[arg(long, default_value_t = 7000)]
         bitrate: u32,
+        /// Video codec preference (auto picks hardware AV1 when available).
+        #[arg(long, value_enum, default_value = "auto")]
+        codec: CodecArg,
         /// Force an encoder (see `encoders`).
         #[arg(long)]
         encoder: Option<String>,
@@ -128,7 +138,7 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Stream { room, name, source, monitor, audio, audio_app, width, height, fps, bitrate, encoder, relay_saver } => {
+        Cmd::Stream { room, name, source, monitor, audio, audio_app, width, height, fps, bitrate, codec, encoder, relay_saver } => {
             use screenlive_core::procs::{resolve_audio, AudioChoice};
             let server = Server::new(&cli.server)?;
             let room = match room {
@@ -152,6 +162,11 @@ async fn main() -> Result<()> {
                 },
                 format: VideoFormat { width, height, fps },
                 bitrate_kbps: bitrate,
+                codec: match codec {
+                    CodecArg::Auto => Codec::Auto,
+                    CodecArg::Av1 => Codec::Av1,
+                    CodecArg::H264 => Codec::H264,
+                },
                 encoder,
                 relay_saver,
             };

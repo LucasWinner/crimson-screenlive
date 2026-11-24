@@ -113,7 +113,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 .form-error { margin: 0; font-size: 13px; color: var(--crimson-hover); }
 
 .watch-row { display: flex; align-items: center; gap: 12px; }
-.field.fps { width: 92px; flex: none; }
+.field.fps { width: 72px; flex: none; }
+.field.bitrate { width: 112px; flex: none; }
 .badge.relay { background: #f5a524; color: #1c1300; }
 .relay-note {
   display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; padding: 8px 10px;

@@ -5,12 +5,20 @@ import { listen } from "@tauri-apps/api/event";
 interface Peer { id: string; name: string; streaming: boolean }
 interface RoomView { code: string; me: string; name: string; peers: Peer[] }
 interface Monitor { id: number; name: string; width: number; height: number; primary: boolean }
-interface SystemInfo { monitors: Monitor[]; encoder: string | null; hardware: boolean }
+interface SystemInfo {
+  monitors: Monitor[];
+  encoder: string | null;
+  hardware: boolean;
+  av1Encoder: string | null;
+  h264Encoder: string | null;
+  h264Hardware: boolean;
+}
 interface StreamStatus { active: boolean; encoder: string | null; viewers: number; relayed: number; error: string | null }
 interface WatchStatus { active: boolean; streamerId: string | null; streamerName: string | null; fps: number; relayed: boolean; ended: string | null }
 interface Settings {
   nickname: string; serverUrl: string; monitorId: number | null; quality: string;
   audioMode: "all-except" | "app" | "all" | "none"; audioExclude: string; audioApp: string;
+  codec: "auto" | "av1" | "h264"; bitrateKbps: number | null;
 }
 interface AppInfo { pid: number; exe: string; title: string }
 interface AudioSources { supported: boolean; discordRunning: boolean; apps: AppInfo[] }
@@ -31,6 +39,7 @@ const ui = {
   monitor: $<HTMLSelectElement>("monitor"),
   resolution: $<HTMLSelectElement>("resolution"),
   fps: $<HTMLSelectElement>("fps"),
+  bitrate: $<HTMLSelectElement>("bitrate"),
   qualityHint: $("quality-hint"),
   watchRelay: $("watch-relay"),
   streamRelay: $("stream-relay"),
@@ -40,6 +49,7 @@ const ui = {
   audioExclude: $<HTMLSelectElement>("audio-exclude"),
   audioApp: $<HTMLSelectElement>("audio-app"),
   audioHelp: $("audio-help"),
+  codecHelp: $("codec-help"),
   refreshApps: $("refresh-apps"),
   streamForm: $("stream-form"),
   streamLive: $("stream-live"),
@@ -66,7 +76,10 @@ let settings: Settings = {
   audioMode: "all-except",
   audioExclude: "Discord.exe",
   audioApp: "",
+  codec: "auto",
+  bitrateKbps: null,
 };
+let sysInfo: SystemInfo | null = null;
 let room: RoomView | null = null;
 let streaming = false;
 let watchingId: string | null = null;
@@ -259,11 +272,13 @@ async function toggleStream() {
   }
   settings.monitorId = ui.monitor.value ? Number(ui.monitor.value) : null;
   settings.quality = `${ui.resolution.value}p${ui.fps.value}`;
-  await persist(); // the backend reads the audio choice from saved settings
+  settings.bitrateKbps = ui.bitrate.value === "auto" ? null : Number(ui.bitrate.value);
+  await persist(); // the backend reads the audio and codec choice from saved settings
   const s = await run(ui.toggleStream, () =>
     invoke<StreamStatus>("start_stream", {
       monitorId: settings.monitorId,
       qualityPreset: settings.quality,
+      bitrateKbps: settings.bitrateKbps,
     }),
   );
   if (s) renderStream(s);
@@ -271,19 +286,40 @@ async function toggleStream() {
 
 // ---- quality
 
+function activeCodec(): "av1" | "h264" {
+  if (settings.codec === "h264") return "h264";
+  if (settings.codec === "av1") return "av1";
+  return sysInfo?.av1Encoder ? "av1" : "h264";
+}
+
 /** Mirrors quality() in src-tauri/src/room.rs. */
-function videoKbps(res: string, fps: string) {
-  const at60 = res === "720" ? 4500 : res === "1440" ? 12000 : 7000;
+function videoKbps(res: string, fps: string, codec: "av1" | "h264") {
+  if (ui.bitrate.value !== "auto") return Number(ui.bitrate.value);
+  const at60 =
+    res === "720" ? (codec === "av1" ? 3800 : 4500)
+    : res === "1440" ? 12000
+    : codec === "av1" ? 6000 : 7000;
   return fps === "30" ? Math.round((at60 * 2) / 3) : at60;
 }
 
 function renderQualityHint() {
-  const mbps = (videoKbps(ui.resolution.value, ui.fps.value) + 128) / 1000;
+  const codec = activeCodec();
+  const mbps = (videoKbps(ui.resolution.value, ui.fps.value, codec) + 128) / 1000;
   const tip = ui.fps.value === "30" ? "bom para vídeos e filmes" : "melhor para jogos";
-  ui.qualityHint.textContent = `~${mbps.toFixed(1).replace(".", ",")} Mbps de upload por espectador · ${tip}`;
+  ui.qualityHint.textContent = `~${mbps.toFixed(1).replace(".", ",")} Mbps de upload por espectador · ${codec.toUpperCase()} · ${tip}`;
+}
+function renderEncoderInfo() {
+  if (!sysInfo) return;
+  const codec = activeCodec();
+  const enc = codec === "av1" ? sysInfo.av1Encoder : sysInfo.h264Encoder;
+  const hw = codec === "av1" ? Boolean(sysInfo.av1Encoder) : sysInfo.h264Hardware;
+  ui.encoderInfo.textContent = enc
+    ? `Codificação: ${enc}${hw ? " (placa de vídeo, não pesa no jogo)" : " (processador)"}`
+    : "Nenhum codificador de vídeo encontrado.";
 }
 ui.resolution.onchange = renderQualityHint;
 ui.fps.onchange = renderQualityHint;
+ui.bitrate.onchange = renderQualityHint;
 
 // ---- audio source settings
 
@@ -384,6 +420,14 @@ async function openSettings() {
   ui.serverUrl.value = settings.serverUrl;
   const radio = document.querySelector<HTMLInputElement>(`input[name="audio-mode"][value="${settings.audioMode}"]`);
   if (radio) radio.checked = true;
+  const av1Radio = document.querySelector<HTMLInputElement>('input[name="video-codec"][value="av1"]');
+  if (av1Radio) av1Radio.disabled = !sysInfo?.av1Encoder;
+  const codec = settings.codec === "av1" && !sysInfo?.av1Encoder ? "auto" : settings.codec;
+  const codecRadio = document.querySelector<HTMLInputElement>(`input[name="video-codec"][value="${codec}"]`);
+  if (codecRadio) codecRadio.checked = true;
+  ui.codecHelp.textContent = sysInfo?.av1Encoder
+    ? `Neste PC: ${sysInfo.av1Encoder} disponível. Use H.264 se algum amigo estiver numa versão antiga do app.`
+    : "Neste PC não há codificador AV1 por hardware; o modo Automático usará H.264.";
   void loadAudioSources();
   ui.settingsDialog.showModal();
 }
@@ -411,12 +455,17 @@ ui.settingsForm.addEventListener("submit", (e) => {
     ui.settingsError.hidden = false;
     return;
   }
+  const codec = (document.querySelector<HTMLInputElement>('input[name="video-codec"]:checked')?.value ??
+    settings.codec) as Settings["codec"];
   ui.settingsError.hidden = true;
   settings.serverUrl = url;
   settings.audioMode = mode;
+  settings.codec = codec;
   if (ui.audioExclude.value) settings.audioExclude = ui.audioExclude.value;
   if (ui.audioApp.value) settings.audioApp = ui.audioApp.value;
   renderAudioSummary();
+  renderEncoderInfo();
+  renderQualityHint();
   void persist();
   toast("Configurações salvas.", true);
 });
@@ -440,24 +489,28 @@ async function init() {
   const [res, fps] = (settings.quality || "1080p60").split("p");
   ui.resolution.value = ["720", "1080", "1440"].includes(res) ? res : "1080";
   ui.fps.value = fps === "30" ? "30" : "60";
+  if (settings.bitrateKbps && [...ui.bitrate.options].some((o) => Number(o.value) === settings.bitrateKbps)) {
+    ui.bitrate.value = String(settings.bitrateKbps);
+  } else {
+    ui.bitrate.value = "auto";
+  }
   renderQualityHint();
   renderAudioSummary();
 
-  const info = await invoke<SystemInfo>("system_info");
+  sysInfo = await invoke<SystemInfo>("system_info");
   ui.monitor.replaceChildren(
-    ...info.monitors.map((m, i) => {
+    ...sysInfo.monitors.map((m, i) => {
       const o = document.createElement("option");
       o.value = String(m.id);
       o.textContent = `Tela ${i + 1}: ${m.name} (${m.width}×${m.height})${m.primary ? " · principal" : ""}`;
       return o;
     }),
   );
-  if (settings.monitorId && info.monitors.some((m) => m.id === settings.monitorId)) {
+  if (settings.monitorId && sysInfo.monitors.some((m) => m.id === settings.monitorId)) {
     ui.monitor.value = String(settings.monitorId);
   }
-  ui.encoderInfo.textContent = info.encoder
-    ? `Codificação: ${info.encoder}${info.hardware ? " (placa de vídeo, não pesa no jogo)" : " (processador)"}`
-    : "Nenhum codificador de vídeo encontrado.";
+  renderEncoderInfo();
+  renderQualityHint();
 
   (settings.nickname ? ui.roomCode : ui.nickname).focus();
 }

@@ -25,12 +25,12 @@ const gstPlugins = path.join(GST, "lib", "gstreamer-1.0");
 const PLUGINS = [
   "coreelements", "typefindfunctions", "playback", "autodetect",
   // capture / GPU / encoders / decoders
-  "d3d11", "d3d12", "amfcodec", "nvcodec", "qsv", "mediafoundation", "openh264",
+  "d3d11", "d3d12", "amfcodec", "nvcodec", "qsv", "mediafoundation", "openh264", "dav1d",
   "videoconvertscale", "videoparsersbad", "videotestsrc",
   // audio
   "wasapi2", "audioconvert", "audioresample", "opus", "audiotestsrc",
   // webrtc
-  "rtp", "rtpmanager", "srtp", "dtls", "nice", "webrtc",
+  "rtp", "rtpmanager", "rsrtp", "srtp", "dtls", "nice", "webrtc",
 ];
 
 function dumpbin() {

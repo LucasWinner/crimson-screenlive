@@ -1,4 +1,4 @@
-//! Crimson ScreenLive core: screen capture, hardware H.264 encoding and
+//! Crimson ScreenLive core: screen capture, hardware H.264/AV1 encoding and
 //! WebRTC transport (P2P, up to 4 viewers) on top of GStreamer.
 
 pub mod capture;

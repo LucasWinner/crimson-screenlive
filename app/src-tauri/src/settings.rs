@@ -24,6 +24,10 @@ pub struct Settings {
     pub audio_exclude: String,
     /// Exe captured alone in "app" mode.
     pub audio_app: String,
+    /// "auto" | "av1" | "h264"
+    pub codec: String,
+    /// Manual bitrate override in kbps (None = automatic).
+    pub bitrate_kbps: Option<u32>,
 }
 
 impl Default for Settings {
@@ -37,6 +41,8 @@ impl Default for Settings {
             audio_mode: "all-except".into(),
             audio_exclude: "Discord.exe".into(),
             audio_app: String::new(),
+            codec: "auto".into(),
+            bitrate_kbps: None,
         }
     }
 }
@@ -50,6 +56,15 @@ impl Settings {
             "app" if !self.audio_app.is_empty() => AudioChoice::App(self.audio_app.clone()),
             _ if self.audio_exclude.is_empty() => AudioChoice::AllButDiscord,
             _ => AudioChoice::AllExcept(self.audio_exclude.clone()),
+        }
+    }
+
+    pub fn codec_choice(&self) -> screenlive_core::encoder::Codec {
+        use screenlive_core::encoder::Codec;
+        match self.codec.as_str() {
+            "av1" => Codec::Av1,
+            "h264" => Codec::H264,
+            _ => Codec::Auto,
         }
     }
 }
@@ -87,6 +102,10 @@ pub fn save_settings(app: AppHandle, mut settings: Settings) -> Result<(), Strin
     } else {
         screenlive_core::signaling::Server::new(&settings.server_url).map_err(|e| e.to_string())?;
     }
+    if !matches!(settings.codec.as_str(), "auto" | "av1" | "h264") {
+        settings.codec = "auto".into();
+    }
+    settings.bitrate_kbps = settings.bitrate_kbps.map(|b| b.clamp(1000, 30_000));
     let p = path(&app).ok_or("no config directory")?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -123,5 +142,20 @@ mod tests {
     fn keeps_local_server_url() {
         let s: Settings = serde_json::from_str(r#"{"serverUrl":"http://127.0.0.1:8787"}"#).unwrap();
         assert_eq!(s.server_url, "http://127.0.0.1:8787");
+        assert_eq!(s.codec, "auto");
+        assert_eq!(s.bitrate_kbps, None);
+    }
+
+    #[test]
+    fn codec_choice_mapping() {
+        use screenlive_core::encoder::Codec;
+        let mut s = Settings::default();
+        assert_eq!(s.codec_choice(), Codec::Auto);
+        s.codec = "av1".into();
+        assert_eq!(s.codec_choice(), Codec::Av1);
+        s.codec = "h264".into();
+        assert_eq!(s.codec_choice(), Codec::H264);
+        s.codec = "unknown".into();
+        assert_eq!(s.codec_choice(), Codec::Auto);
     }
 }
