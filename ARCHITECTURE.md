@@ -81,5 +81,5 @@ webrtcbin ──► decodebin
 
 ## Segurança e chaves
 
-- **`.app-key` (`SCREENLIVE_APP_KEY`):** chave compartilhada compilada no binário (`core/build.rs`); o servidor guarda apenas o SHA-256 em `APP_KEY_SHA256` (`signaling/wrangler.toml`). Rotacionável via `node scripts/gen-app-key.mjs --rotate`.
+- **Chave de acesso (`x-screenlive-key`):** a build pública do GitHub não embute servidor padrão nem chave; o usuário configura URL do servidor e chave via convite (`csl1:...`) ou em ⚙️ Configurações (`settings.json`). No servidor, apenas o SHA-256 fica armazenado em `APP_KEY_SHA256` (secret da Cloudflare). Para builds locais/CLI, `core/build.rs` ainda suporta `.app-key` ou `SCREENLIVE_APP_KEY`. Rotacionável via `node scripts/gen-app-key.mjs --rotate`.
 - **Chave do Tauri Updater (`~/.tauri/crimson-screenlive.key`):** assinatura Ed25519/minisign dos instaladores para atualização automática segura. A chave pública fica em `app/src-tauri/tauri.conf.json` e a privada no secret `TAURI_SIGNING_PRIVATE_KEY` do GitHub Actions.

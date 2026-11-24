@@ -40,7 +40,7 @@ interface WatchStatus {
   ended: string | null;
 }
 interface Settings {
-  nickname: string; serverUrl: string; monitorId: number | null; quality: string;
+  nickname: string; serverUrl: string; serverKey: string; monitorId: number | null; quality: string;
   audioMode: "all-except" | "app" | "all" | "none"; audioExclude: string; audioApp: string;
   codec: "auto" | "av1" | "h264"; bitrateKbps: number | null;
   watchVolume: number; watchMuted: boolean;
@@ -53,6 +53,10 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 const ui = {
   welcome: $("welcome"),
   room: $("room"),
+  serverSetup: $("server-setup"),
+  inviteInput: $<HTMLInputElement>("invite-input"),
+  applyInvite: $<HTMLButtonElement>("apply-invite"),
+  setupManual: $("setup-manual"),
   nickname: $<HTMLInputElement>("nickname"),
   roomCode: $<HTMLInputElement>("room-code"),
   createRoom: $<HTMLButtonElement>("create-room"),
@@ -101,12 +105,17 @@ const ui = {
   settingsError: $("settings-error"),
   openSettings: $("open-settings"),
   serverUrl: $<HTMLInputElement>("server-url"),
+  serverKey: $<HTMLInputElement>("server-key"),
+  toggleKey: $("toggle-key"),
+  pasteInvite: $("paste-invite"),
+  copyInvite: $("copy-invite"),
   toast: $("toast"),
 };
 
 let settings: Settings = {
   nickname: "",
   serverUrl: "",
+  serverKey: "",
   monitorId: null,
   quality: "1080p60",
   audioMode: "all-except",
@@ -306,8 +315,48 @@ function renderWatch(w: WatchStatus) {
 
 // ---- actions
 
+function encodeInvite(url: string, key: string): string {
+  const payload = key ? { s: url, k: key } : { s: url };
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return "csl1:" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function parseInvite(raw: string): { serverUrl: string; serverKey: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\/.+/i.test(trimmed)) {
+    return { serverUrl: trimmed.replace(/\/+$/, ""), serverKey: "" };
+  }
+  const body = trimmed.startsWith("csl1:") ? trimmed.slice(5) : trimmed;
+  try {
+    const b64 = body.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((body.length + 3) % 4);
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { s?: unknown; k?: unknown };
+    if (typeof parsed.s !== "string" || !/^https?:\/\/.+/.test(parsed.s.trim())) return null;
+    return {
+      serverUrl: parsed.s.trim().replace(/\/+$/, ""),
+      serverKey: typeof parsed.k === "string" ? parsed.k.trim() : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function renderServerSetup() {
+  ui.serverSetup.hidden = Boolean(settings.serverUrl);
+}
+
 async function enterRoom(action: "create" | "join") {
   await ready;
+  if (!settings.serverUrl) {
+    renderServerSetup();
+    ui.inviteInput.focus();
+    toast("Cole o convite do servidor ou configure em ⚙️ Configurações.");
+    return;
+  }
   const name = ui.nickname.value.trim();
   if (!name) {
     ui.nickname.focus();
@@ -589,6 +638,24 @@ ui.installUpdate.onclick = async () => {
   }
 };
 
+ui.applyInvite.onclick = async () => {
+  await ready;
+  const parsed = parseInvite(ui.inviteInput.value);
+  if (!parsed) {
+    ui.inviteInput.focus();
+    toast("Convite inválido. Cole o código csl1:... ou um endereço http(s)://");
+    return;
+  }
+  settings.serverUrl = parsed.serverUrl;
+  settings.serverKey = parsed.serverKey;
+  ui.inviteInput.value = "";
+  renderServerSetup();
+  await persist();
+  toast("Servidor configurado!", true);
+  (settings.nickname ? ui.roomCode : ui.nickname).focus();
+};
+ui.setupManual.onclick = () => void openSettings();
+
 ui.refreshSources.onclick = () => void refreshCaptureSources().catch((e) => toast(friendly(e)));
 ui.checkUpdate.onclick = () => void checkForUpdate(true);
 
@@ -603,6 +670,9 @@ async function openSettings() {
   await ready;
   ui.settingsError.hidden = true;
   ui.serverUrl.value = settings.serverUrl;
+  ui.serverKey.value = settings.serverKey;
+  ui.serverKey.type = "password";
+  ui.toggleKey.textContent = "mostrar";
   const radio = document.querySelector<HTMLInputElement>(`input[name="audio-mode"][value="${settings.audioMode}"]`);
   if (radio) radio.checked = true;
   const av1Radio = document.querySelector<HTMLInputElement>('input[name="video-codec"][value="av1"]');
@@ -619,6 +689,45 @@ async function openSettings() {
 ui.openSettings.onclick = () => void openSettings();
 ui.changeAudio.onclick = () => void openSettings();
 ui.refreshApps.onclick = () => void loadAudioSources();
+ui.toggleKey.onclick = () => {
+  const show = ui.serverKey.type === "password";
+  ui.serverKey.type = show ? "text" : "password";
+  ui.toggleKey.textContent = show ? "ocultar" : "mostrar";
+};
+ui.pasteInvite.onclick = async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    const parsed = parseInvite(text);
+    if (!parsed) {
+      ui.settingsError.textContent = "A área de transferência não contém um convite válido (csl1:...).";
+      ui.settingsError.hidden = false;
+      return;
+    }
+    ui.settingsError.hidden = true;
+    ui.serverUrl.value = parsed.serverUrl;
+    ui.serverKey.value = parsed.serverKey;
+  } catch {
+    ui.settingsError.textContent = "Não foi possível ler a área de transferência.";
+    ui.settingsError.hidden = false;
+  }
+};
+ui.copyInvite.onclick = async () => {
+  const url = ui.serverUrl.value.trim().replace(/\/+$/, "");
+  if (!/^https?:\/\/.+/.test(url)) {
+    ui.settingsError.textContent = "Preencha um endereço de servidor válido antes de copiar o convite.";
+    ui.settingsError.hidden = false;
+    return;
+  }
+  ui.settingsError.hidden = true;
+  const token = encodeInvite(url, ui.serverKey.value.trim());
+  try {
+    await navigator.clipboard.writeText(token);
+    toast("Convite copiado! Mande no privado para seus amigos.", true);
+  } catch {
+    ui.settingsError.textContent = `Convite: ${token}`;
+    ui.settingsError.hidden = false;
+  }
+};
 document.querySelectorAll<HTMLInputElement>('input[name="audio-mode"]').forEach((r) => (r.onchange = syncAudioInputs));
 ui.audioApp.onchange = () => selectMode("app");
 ui.audioExclude.onchange = () => selectMode("all-except");
@@ -626,7 +735,7 @@ ui.settingsForm.addEventListener("submit", (e) => {
   const submitter = e.submitter as HTMLButtonElement | null;
   if (submitter && submitter.value !== "save") return;
   const url = ui.serverUrl.value.trim().replace(/\/+$/, "");
-  if (!/^https?:\/\/.+/.test(url)) {
+  if (url && !/^https?:\/\/.+/.test(url)) {
     e.preventDefault();
     ui.settingsError.textContent = "O endereço do servidor precisa começar com http:// ou https://";
     ui.settingsError.hidden = false;
@@ -644,10 +753,12 @@ ui.settingsForm.addEventListener("submit", (e) => {
     settings.codec) as Settings["codec"];
   ui.settingsError.hidden = true;
   settings.serverUrl = url;
+  settings.serverKey = ui.serverKey.value.trim();
   settings.audioMode = mode;
   settings.codec = codec;
   if (ui.audioExclude.value) settings.audioExclude = ui.audioExclude.value;
   if (ui.audioApp.value) settings.audioApp = ui.audioApp.value;
+  renderServerSetup();
   renderAudioSummary();
   renderEncoderInfo();
   renderQualityHint();
@@ -679,6 +790,7 @@ async function init() {
   } else {
     ui.bitrate.value = "auto";
   }
+  renderServerSetup();
   renderQualityHint();
   renderAudioSummary();
   renderWatchVolume();
@@ -686,7 +798,7 @@ async function init() {
 
   await refreshCaptureSources();
 
-  (settings.nickname ? ui.roomCode : ui.nickname).focus();
+  (!settings.serverUrl ? ui.inviteInput : settings.nickname ? ui.roomCode : ui.nickname).focus();
   void checkForUpdate(false);
 }
 

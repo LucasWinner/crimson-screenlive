@@ -16,7 +16,6 @@ jobs:
     env:
       GST_VERSION: "1.28.8"
       GST_ROOT: "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64"
-      SCREENLIVE_APP_KEY: ${{ secrets.SCREENLIVE_APP_KEY }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:

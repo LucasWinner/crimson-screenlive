@@ -31,6 +31,16 @@
         <h1>Transmita sua tela para os amigos</h1>
         <p class="muted">Crie uma sala e mande o código no Discord, ou entre com o código de alguém.</p>
 
+        <div id="server-setup" class="card server-setup" hidden>
+          <div class="setup-title">Conectar a um servidor</div>
+          <p class="muted small">Cole o convite enviado por quem hospeda o servidor (só precisa fazer isso uma vez).</p>
+          <div class="join">
+            <input id="invite-input" placeholder="csl1:..." autocomplete="off" spellcheck="false" aria-label="Convite do servidor" />
+            <button id="apply-invite" class="btn primary small" type="button">Aplicar</button>
+          </div>
+          <button id="setup-manual" type="button" class="link small left">Configurar manualmente em ⚙️ Configurações</button>
+        </div>
+
         <label class="field">
           <span>Seu apelido</span>
           <input id="nickname" maxlength="32" placeholder="Ex: Crimson" autocomplete="off" />
@@ -191,9 +201,20 @@
 
         <label class="field">
           <span>Servidor</span>
-          <input id="server-url" spellcheck="false" />
+          <input id="server-url" placeholder="https://seu-worker.workers.dev" spellcheck="false" />
         </label>
-        <p class="muted small">Endereço do servidor de salas. Só mude se alguém te passar outro.</p>
+        <div class="field">
+          <div class="row-between">
+            <span>Chave de acesso</span>
+            <button type="button" id="toggle-key" class="link small">mostrar</button>
+          </div>
+          <input id="server-key" type="password" placeholder="Opcional (depende do servidor)" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="row">
+          <button type="button" id="paste-invite" class="btn ghost small grow">Colar convite</button>
+          <button type="button" id="copy-invite" class="btn ghost small grow">Copiar convite</button>
+        </div>
+        <p class="muted small">Peça o convite para quem hospeda a sala, ou suba o seu próprio servidor Cloudflare gratuito (veja o README).</p>
         <p id="settings-error" class="form-error" hidden></p>
         <div class="row-between">
           <button type="button" id="check-update" class="link small">Verificar atualizações</button>

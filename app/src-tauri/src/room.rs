@@ -210,16 +210,24 @@ pub fn audio_sources() -> AudioSources {
     }
 }
 
+fn configured_server(app: &AppHandle) -> CmdResult<Server> {
+    let s = settings::load(app);
+    if s.server_url.trim().is_empty() {
+        return Err("configure um servidor ou cole o convite do servidor antes de entrar".into());
+    }
+    Server::with_key(&s.server_url, (!s.server_key.trim().is_empty()).then_some(s.server_key.as_str())).map_err(err)
+}
+
 #[tauri::command]
 pub async fn create_room(app: AppHandle, state: State<'_, AppState>, name: String) -> CmdResult<RoomView> {
-    let server = Server::new(&settings::load(&app).server_url).map_err(err)?;
+    let server = configured_server(&app)?;
     let code = server.create_room().await.map_err(|e| format!("{e:#}"))?;
     join(app, state.room.clone(), server, code, name).await
 }
 
 #[tauri::command]
 pub async fn join_room(app: AppHandle, state: State<'_, AppState>, code: String, name: String) -> CmdResult<RoomView> {
-    let server = Server::new(&settings::load(&app).server_url).map_err(err)?;
+    let server = configured_server(&app)?;
     join(app, state.room.clone(), server, code, name).await
 }
 
@@ -468,7 +476,7 @@ async fn join(app: AppHandle, shared: Shared, server: Server, code: String, name
     let joined = server.enter(&code, &name).await.map_err(|e| {
         let msg = format!("{e:#}");
         if msg.contains("invalid app key") {
-            "esta versão do app não é aceita pelo servidor. Peça o instalador mais novo".to_string()
+            "chave de acesso inválida ou ausente para este servidor. Cole um convite válido em ⚙️ Configurações.".to_string()
         } else if msg.contains("did not answer") {
             "o servidor não respondeu".to_string()
         } else {

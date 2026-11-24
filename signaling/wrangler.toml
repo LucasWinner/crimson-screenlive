@@ -12,9 +12,10 @@ tag = "v1"
 new_sqlite_classes = ["Room"]
 
 # Optional secrets (set with `npx wrangler secret put <NAME>`):
+#   APP_KEY_SHA256      - SHA-256 hex of accepted access key(s) (see scripts/gen-app-key.mjs)
 #   TURN_KEY_ID         - Cloudflare Realtime TURN key id
 #   TURN_KEY_API_TOKEN  - Cloudflare Realtime TURN key API token
-# Without them, rooms return STUN only (works for most home networks).
+# Without TURN secrets, rooms return STUN only (works for most home networks).
 
 [[durable_objects.bindings]]
 name = "USAGE"
@@ -28,8 +29,6 @@ new_sqlite_classes = ["Usage"]
 # Stop handing out TURN credentials once the estimated usage this month (UTC)
 # reaches this many GB. Cloudflare's free TURN allowance is 1000 GB/month.
 TURN_MONTHLY_CAP_GB = "800"
-# App access key: only its SHA-256 lives here (see scripts/gen-app-key.mjs).
-APP_KEY_SHA256 = ""
 REQUIRE_APP_KEY = "true"
 # TURN credential lifetime; must outlast a streaming session.
 TURN_TTL_SECONDS = "21600"

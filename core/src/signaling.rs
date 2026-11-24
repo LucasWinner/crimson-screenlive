@@ -81,6 +81,10 @@ fn app_key() -> Option<String> {
 
 impl Server {
     pub fn new(base: &str) -> Result<Self> {
+        Self::with_key(base, None)
+    }
+
+    pub fn with_key(base: &str, key: Option<&str>) -> Result<Self> {
         let base = Url::parse(base).with_context(|| format!("invalid server URL: {base}"))?;
         if !matches!(base.scheme(), "http" | "https") {
             bail!("server URL must be http(s)://");
@@ -89,7 +93,11 @@ impl Server {
             .timeout(Duration::from_secs(15))
             .build()
             .context("building HTTP client")?;
-        Ok(Self { base, key: app_key(), http_client })
+        let key = key
+            .map(|k| k.trim().to_owned())
+            .filter(|k| !k.is_empty())
+            .or_else(app_key);
+        Ok(Self { base, key, http_client })
     }
 
     pub fn http(&self, path: &str) -> Url {

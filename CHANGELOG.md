@@ -3,6 +3,15 @@
 Todas as mudanças notáveis neste projeto são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e este projeto segue [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.7.0] - 2026-11-24
+
+### Adicionado
+- **Servidor e chave configuráveis no app (BYO Server):** campo **Chave de acesso** (`x-screenlive-key`) em ⚙️ Configurações, card de configuração inicial na tela de boas-vindas e importação/exportação em 1 clique via convite `csl1:...` (`scripts/gen-invite.mjs`, **Colar convite** / **Copiar convite**).
+- Flag `--key` na CLI (`screenlive-cli`) e construtor `Server::with_key` em `screenlive-core`.
+
+### Alterado
+- **Segurança da build pública:** removidos o endereço pessoal de Worker padrão e a `.app-key` embutida da release do GitHub (`.github/workflows/release.yml`, `app/src-tauri/src/settings.rs`, `core/src/bin/cli.rs`, `signaling/wrangler.toml`). Agora quem baixa pelo GitHub não acessa nenhum servidor privado sem receber um convite ou subir seu próprio Worker.
+
 ## [0.6.0] - 2026-11-24
 
 ### Adicionado

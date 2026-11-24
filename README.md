@@ -15,10 +15,11 @@ Uma alternativa ao "Go Live" do Discord para quando ele não funciona.
 
 1. Baixe o instalador em [Releases](../../releases/latest) (`CrimsonScreenLive_x.y.z_x64-setup.exe`) e instale.
    > O Windows pode mostrar "O Windows protegeu o computador" porque o app não tem certificado pago de Code Signing. Clique em **Mais informações → Executar assim mesmo**.
-2. Abra o **Crimson ScreenLive**, escolha um apelido.
-3. **Criar sala** → clique no código para copiar e mande para os amigos. Ou cole o código de alguém e clique **Entrar**.
-4. Para transmitir: escolha a tela ou janela, a resolução/FPS/bitrate e clique **Transmitir**.
-5. Para assistir: clique **Assistir** ao lado de quem está **AO VIVO**. O vídeo abre numa janela separada (botão **Tela cheia** no app ou `Alt+Enter`).
+2. Na primeira abertura, cole o **convite do servidor (`csl1:...`)** enviado por quem hospeda a sala (ou configure manualmente em ⚙️ Configurações). Isso só precisa ser feito uma vez.
+3. Escolha um apelido.
+4. **Criar sala** → clique no código para copiar e mande para os amigos. Ou cole o código de alguém e clique **Entrar**.
+5. Para transmitir: escolha a tela ou janela, a resolução/FPS/bitrate e clique **Transmitir**.
+6. Para assistir: clique **Assistir** ao lado de quem está **AO VIVO**. O vídeo abre numa janela separada (botão **Tela cheia** no app ou `Alt+Enter`).
 
 **Qualidade × internet:** escolha resolução (`720p`/`1080p`/`1440p`), `30` ou `60 FPS` e bitrate (**Auto** ou manual de `2,5` a `20 Mbps`).
 - No modo **Auto** com **AV1** por hardware: ~3,8 Mbps (`720p60`), ~6 Mbps (`1080p60`) e ~12 Mbps (`1440p60` para máxima nitidez). Se houver perda de pacotes na rede de algum amigo, o app reduz temporariamente o bitrate e recupera sozinho quando estabilizar.
@@ -41,7 +42,7 @@ App (Tauri + Rust) ──captura GPU──► encoder AV1/H.264 por hardware ─
 | `core/` | Biblioteca Rust: captura (tela/janela), escolha de encoder, pipelines GStreamer/WebRTC, cliente de sinalização. Inclui `screenlive-cli`. |
 | `app/` | App desktop Tauri 2 (UI em TypeScript, backend em `app/src-tauri`). |
 | `signaling/` | Servidor de salas: Cloudflare Worker + Durable Objects (plano gratuito). |
-| `scripts/` | Teste ponta a ponta (`e2e.sh`), atalho da CLI (`cli.ps1`) e geração de `.app-key`. |
+| `scripts/` | Teste ponta a ponta (`e2e.sh`), atalho da CLI (`cli.ps1`), geração de `.app-key` (`gen-app-key.mjs`) e convite de servidor (`gen-invite.mjs`). |
 | `ARCHITECTURE.md` | Detalhes técnicos dos pipelines GStreamer, protocolo WebSocket e segurança. |
 | `CHANGELOG.md` | Histórico de versões e alterações. |
 
@@ -67,32 +68,35 @@ Testes e checks:
 - Sinalização: `cd signaling; npm run typecheck; npm test` · `npm run smoke` (com `wrangler dev` rodando)
 - Ponta a ponta: `bash scripts/e2e.sh` (com servidor local rodando)
 
-### Chave do app e secrets de Release (GitHub Actions)
+### Servidor de salas (Cloudflare) e convites
 
-1. **Chave do app (`.app-key`):** o servidor só aceita apps compilados com a chave do projeto. Ela fica em `.app-key` na raiz (fora do git) e o servidor guarda só o hash (`APP_KEY_SHA256` em `signaling/wrangler.toml`).
-   ```powershell
-   node scripts/gen-app-key.mjs            # cria a chave (se não existir) e mostra o hash
-   node scripts/gen-app-key.mjs --rotate   # troca a chave: atualize o hash e faça deploy; versões antigas param de funcionar
-   ```
-   **Guarde um backup do `.app-key`** — sem ele, novas builds não conseguem usar o seu servidor.
-
-2. **Chave do Tauri Updater:** usada para assinar atualizações automáticas. A chave pública fica em `app/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`) e a privada deve ficar segura fora do repositório (ex.: `%USERPROFILE%\.tauri\crimson-screenlive.key`).
-
-3. **Secrets no GitHub (Settings → Secrets and variables → Actions):**
-   - `SCREENLIVE_APP_KEY`: conteúdo do arquivo `.app-key`.
-   - `TAURI_SIGNING_PRIVATE_KEY`: conteúdo da chave privada do updater.
-   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: senha da chave (se houver).
-   Ao criar uma tag `vX.Y.Z` (ex.: `git tag v0.6.0 && git push origin v0.6.0`), o workflow `.github/workflows/release.yml` compila, assina e publica o instalador e o `latest.json` automaticamente no GitHub Releases.
-
-### Servidor de salas (Cloudflare)
+A build pública do GitHub **não** inclui nenhum servidor ou chave de acesso embutidos. Para hospedar o seu próprio servidor gratuito na Cloudflare:
 
 ```powershell
-cd signaling; npx wrangler deploy
-npx wrangler secret put TURN_KEY_ID          # chave em Realtime → TURN Server
+node scripts/gen-app-key.mjs            # cria .app-key (se não existir) e mostra o SHA-256
+cd signaling; npm install; npx wrangler deploy
+npx wrangler secret put APP_KEY_SHA256       # cole o hash gerado acima
+npx wrangler secret put TURN_KEY_ID          # opcional: chave em Realtime → TURN Server
 npx wrangler secret put TURN_KEY_API_TOKEN
 ```
 
-O app de quem transmite informa periodicamente quantos bytes enviou pelo TURN; o servidor soma por mês (UTC) e, ao atingir `TURN_MONTHLY_CAP_GB` (padrão **800 GB**, em `wrangler.toml`), para de entregar credenciais TURN até o mês virar — a cota gratuita da Cloudflare é 1000 GB. Consumo estimado: `GET /usage` (requer header `x-screenlive-key`). Credenciais TURN só são entregues a membros autenticados e valem por `TURN_TTL_SECONDS` (6 h).
+Depois gere o convite para mandar no privado para os seus amigos (ou clique em **Copiar convite** em ⚙️ Configurações dentro do app):
+
+```powershell
+node scripts/gen-invite.mjs https://seu-worker.workers.dev
+```
+
+Isso imprime uma linha `csl1:...` — seus amigos só precisam colar esse convite uma única vez ao abrir o app.
+
+- Para trocar a chave caso vaze: `node scripts/gen-app-key.mjs --rotate`, atualize `APP_KEY_SHA256` (`npx wrangler secret put APP_KEY_SHA256`) e gere um novo convite com `gen-invite.mjs`.
+- **Teto mensal do TURN:** o app de quem transmite informa periodicamente quantos bytes enviou pelo TURN; o servidor soma por mês (UTC) e, ao atingir `TURN_MONTHLY_CAP_GB` (padrão **800 GB**, em `wrangler.toml`), para de entregar credenciais TURN até o mês virar — a cota gratuita da Cloudflare é 1000 GB. Consumo estimado: `GET /usage` (requer header `x-screenlive-key`). Credenciais TURN só são entregues a membros autenticados e valem por `TURN_TTL_SECONDS` (6 h).
+
+### Secrets de Release (GitHub Actions)
+
+Para publicar builds automáticas com auto-updater em `.github/workflows/release.yml`, configure nos Secrets do repositório:
+- `TAURI_SIGNING_PRIVATE_KEY`: conteúdo da chave privada do Tauri Updater (`%USERPROFILE%\.tauri\crimson-screenlive.key`).
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: senha da chave (se houver).
+Ao criar uma tag `vX.Y.Z` (ex.: `git tag v0.7.0 && git push origin v0.7.0`), o workflow compila, assina e publica o instalador e o `latest.json` automaticamente no GitHub Releases.
 
 ## Status
 

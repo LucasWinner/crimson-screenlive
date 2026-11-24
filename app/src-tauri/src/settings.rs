@@ -5,14 +5,15 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-/// Default signaling server (Cloudflare Worker in `signaling/`).
-pub const DEFAULT_SERVER: &str = "https://seu-worker.workers.dev";
+/// No hardcoded personal server in public builds; users paste a server invite or configure one.
+pub const DEFAULT_SERVER: &str = "";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub nickname: String,
     pub server_url: String,
+    pub server_key: String,
     /// Monitor id from `system_info`, or None for the primary one.
     pub monitor_id: Option<u64>,
     pub quality: String,
@@ -38,6 +39,7 @@ impl Default for Settings {
         Self {
             nickname: String::new(),
             server_url: DEFAULT_SERVER.into(),
+            server_key: String::new(),
             monitor_id: None,
             quality: "1080p60".into(),
             audio: true,
@@ -83,9 +85,8 @@ pub fn load(app: &AppHandle) -> Settings {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    if s.server_url.trim().is_empty() {
-        s.server_url = DEFAULT_SERVER.into();
-    }
+    s.server_url = s.server_url.trim().trim_end_matches('/').to_string();
+    s.server_key = s.server_key.trim().to_string();
     if !s.audio {
         s.audio_mode = "none".into();
         s.audio = true;
@@ -102,10 +103,10 @@ pub fn get_settings(app: AppHandle) -> Settings {
 pub fn save_settings(app: AppHandle, mut settings: Settings) -> Result<(), String> {
     settings.nickname = settings.nickname.trim().to_string();
     settings.server_url = settings.server_url.trim().trim_end_matches('/').to_string();
-    if settings.server_url.is_empty() {
-        settings.server_url = DEFAULT_SERVER.into();
-    } else {
-        screenlive_core::signaling::Server::new(&settings.server_url).map_err(|e| e.to_string())?;
+    settings.server_key = settings.server_key.trim().to_string();
+    if !settings.server_url.is_empty() {
+        screenlive_core::signaling::Server::with_key(&settings.server_url, Some(&settings.server_key))
+            .map_err(|e| e.to_string())?;
     }
     if !matches!(settings.codec.as_str(), "auto" | "av1" | "h264") {
         settings.codec = "auto".into();

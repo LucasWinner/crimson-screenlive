@@ -18,8 +18,11 @@ use screenlive_core::encoder::{self, Codec};
 #[command(about = "Crimson ScreenLive developer CLI")]
 struct Cli {
     /// Signaling server base URL.
-    #[arg(long, global = true, env = "SCREENLIVE_SERVER", default_value = "https://seu-worker.workers.dev")]
+    #[arg(long, global = true, env = "SCREENLIVE_SERVER", default_value = "http://127.0.0.1:8787")]
     server: String,
+    /// Server access key (x-screenlive-key). Falls back to compiled `.app-key` if omitted.
+    #[arg(long, global = true, env = "SCREENLIVE_APP_KEY")]
+    key: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -152,7 +155,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Stream { room, name, source, monitor, window, audio, audio_app, width, height, fps, bitrate, codec, encoder, relay_saver } => {
             use screenlive_core::procs::{resolve_audio, AudioChoice};
-            let server = Server::new(&cli.server)?;
+            let server = Server::with_key(&cli.server, cli.key.as_deref())?;
             let room = match room {
                 Some(r) => r,
                 None => server.create_room().await?,
@@ -196,7 +199,7 @@ async fn main() -> Result<()> {
             streamer.run(events).await
         }
         Cmd::Watch { room, name, target, headless, seconds } => {
-            let server = Server::new(&cli.server)?;
+            let server = Server::with_key(&cli.server, cli.key.as_deref())?;
             let cfg = ViewConfig { target, headless, duration: seconds.map(Duration::from_secs) };
             let joined = server.enter(&room, &name).await?;
             let (sig, mut events, ice) = (joined.sig, joined.events, joined.ice);
