@@ -79,15 +79,24 @@ pub struct VideoFormat {
     pub fps: u32,
 }
 
+fn pixel_format(enc: &EncoderSpec) -> &'static str {
+    if enc.factory == "openh264enc" {
+        "I420"
+    } else {
+        "NV12"
+    }
+}
+
 /// Returns a pipeline fragment producing raw video for `enc`, scaled with
 /// letterboxing to `fmt` (so ultrawide/4K monitors keep their aspect ratio).
 pub fn video_fragment(src: &VideoSource, enc: &EncoderSpec, fmt: &VideoFormat) -> Result<String> {
     let VideoFormat { width: w, height: h, fps } = *fmt;
+    let pix = pixel_format(enc);
     Ok(match src {
         VideoSource::Test => format!(
             "videotestsrc is-live=true pattern=ball ! video/x-raw,framerate={fps}/1 \
              ! videoconvert ! videoscale add-borders=true \
-             ! capsfilter caps=\"video/x-raw,format=NV12,width={w},height={h}\""
+             ! capsfilter caps=\"video/x-raw,format={pix},width={w},height={h}\""
         ),
         VideoSource::MonitorIndex(idx) => monitor_fragment(&format!("monitor-index={idx}"), enc, w, h, fps)?,
         VideoSource::Monitor(id) => monitor_fragment(&format!("monitor-handle={id}"), enc, w, h, fps)?,
@@ -97,17 +106,20 @@ pub fn video_fragment(src: &VideoSource, enc: &EncoderSpec, fmt: &VideoFormat) -
 #[cfg(windows)]
 fn monitor_fragment(select: &str, enc: &EncoderSpec, w: u32, h: u32, fps: u32) -> Result<String> {
     // Capture and scale entirely on the GPU; frames only leave VRAM if the
-    // encoder can't take D3D11 textures (CPU x264 fallback).
+    // encoder can't take D3D11 textures (CPU fallback).
     let gpu = format!(
         "d3d11screencapturesrc {select} show-cursor=true \
          ! video/x-raw(memory:D3D11Memory),framerate={fps}/1 \
          ! d3d11convert add-borders=true \
          ! capsfilter caps=\"video/x-raw(memory:D3D11Memory),format=NV12,width={w},height={h}\""
     );
+    let pix = pixel_format(enc);
     // Note: a parse description can't end in bare caps, hence the capsfilters.
     Ok(match enc.memory {
         Memory::D3D11 => gpu,
-        Memory::System => format!("{gpu} ! d3d11download ! capsfilter caps=\"video/x-raw,format=NV12\""),
+        Memory::System => {
+            format!("{gpu} ! d3d11download ! videoconvert ! capsfilter caps=\"video/x-raw,format={pix}\"")
+        }
     })
 }
 
@@ -128,7 +140,11 @@ pub fn downscale_fragment(src: &VideoSource, enc: &EncoderSpec, w: u32, h: u32) 
              ! capsfilter caps=\"video/x-raw(memory:D3D11Memory),format=NV12,width={w},height={h}\""
         )
     } else {
-        format!("videoscale add-borders=true ! capsfilter caps=\"video/x-raw,format=NV12,width={w},height={h}\"")
+        let pix = pixel_format(enc);
+        format!(
+            "videoscale add-borders=true ! videoconvert \
+             ! capsfilter caps=\"video/x-raw,format={pix},width={w},height={h}\""
+        )
     }
 }
 
@@ -171,9 +187,11 @@ mod tests {
     #[test]
     fn fragments_parse() {
         gst::init().unwrap();
-        let spec = encoder::pick(Some("x264enc")).expect("x264enc available");
+        let spec = encoder::pick(Some("openh264enc")).expect("openh264enc available");
         let v = video_fragment(&VideoSource::Test, &spec, &fmt()).unwrap();
         gst::parse::bin_from_description(&v, true).unwrap_or_else(|e| panic!("{e}: {v}"));
+        let d = downscale_fragment(&VideoSource::Test, &spec, 640, 360);
+        gst::parse::bin_from_description(&d, true).unwrap_or_else(|e| panic!("{e}: {d}"));
         for src in [AudioSource::Test, AudioSource::System, AudioSource::SystemExcept(4), AudioSource::App(4)] {
             let a = audio_fragment(src).unwrap();
             gst::parse::bin_from_description(&a, true).unwrap_or_else(|e| panic!("{e}: {a}"));

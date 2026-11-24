@@ -113,7 +113,7 @@ pub fn stats(webrtc: &gst::Element) -> Option<gst::Structure> {
     }
 }
 
-fn stat<'a>(stats: &'a gst::Structure, id: &str) -> Option<gst::Structure> {
+fn stat(stats: &gst::Structure, id: &str) -> Option<gst::Structure> {
     stats.get::<gst::Structure>(id).ok()
 }
 
@@ -159,5 +159,51 @@ pub fn check_bus_message(msg: &gst::Message) -> Result<bool> {
         }
         MessageView::Eos(_) => Ok(false),
         _ => Ok(true),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_stats(local_type: &str, remote_type: &str, bytes_v: u64, bytes_a: u64) -> gst::Structure {
+        let local = gst::Structure::builder("local-candidate").field("candidate-type", local_type).build();
+        let remote = gst::Structure::builder("remote-candidate").field("candidate-type", remote_type).build();
+        let pair = gst::Structure::builder("candidate-pair")
+            .field("local-candidate-id", "loc")
+            .field("remote-candidate-id", "rem")
+            .build();
+        let transport = gst::Structure::builder("transport").field("selected-candidate-pair-id", "pair").build();
+        let out_v = gst::Structure::builder("outbound-rtp").field("bytes-sent", bytes_v).build();
+        let out_a = gst::Structure::builder("outbound-rtp").field("bytes-sent", bytes_a).build();
+        let in_v = gst::Structure::builder("inbound-rtp").field("bytes-received", 999u64).build();
+        gst::Structure::builder("application/x-webrtc-stats")
+            .field("loc", local)
+            .field("rem", remote)
+            .field("pair", pair)
+            .field("tr", transport)
+            .field("out_v", out_v)
+            .field("out_a", out_a)
+            .field("in_v", in_v)
+            .build()
+    }
+
+    #[test]
+    fn detects_relayed_and_sums_bytes() {
+        gst::init().unwrap();
+        let direct = mk_stats("host", "srflx", 1000, 250);
+        assert_eq!(is_relayed(&direct), Some(false));
+        assert_eq!(bytes_sent(&direct), 1250);
+
+        let local_relay = mk_stats("relay", "host", 4000, 500);
+        assert_eq!(is_relayed(&local_relay), Some(true));
+        assert_eq!(bytes_sent(&local_relay), 4500);
+
+        let remote_relay = mk_stats("srflx", "relay", 0, 0);
+        assert_eq!(is_relayed(&remote_relay), Some(true));
+
+        let empty = gst::Structure::new_empty("application/x-webrtc-stats");
+        assert_eq!(is_relayed(&empty), None);
+        assert_eq!(bytes_sent(&empty), 0);
     }
 }

@@ -34,6 +34,14 @@ pub struct AppState {
     room: Shared,
 }
 
+impl AppState {
+    pub fn shutdown(&self) {
+        if let Some(room) = self.room.lock().unwrap().take() {
+            shutdown(room);
+        }
+    }
+}
+
 /// A running pipeline plus the task watching its bus.
 struct Active<T> {
     obj: Arc<T>,
@@ -68,7 +76,7 @@ pub struct StreamStatus {
     active: bool,
     encoder: Option<String>,
     viewers: usize,
-    /// How many viewers go through the TURN relay (they get 720p).
+    /// How many viewers go through the TURN relay.
     relayed: usize,
     error: Option<String>,
 }
@@ -179,9 +187,7 @@ pub async fn join_room(app: AppHandle, state: State<'_, AppState>, code: String,
 
 #[tauri::command]
 pub fn leave_room(state: State<'_, AppState>) {
-    if let Some(room) = state.room.lock().unwrap().take() {
-        shutdown(room);
-    }
+    state.shutdown();
 }
 
 #[tauri::command]
@@ -201,11 +207,14 @@ pub fn start_stream(
         }
     })?;
     let shared = state.room.clone();
-    let mut guard = shared.lock().unwrap();
-    let room = guard.as_mut().ok_or("você não está em uma sala")?;
-    if room.streamer.is_some() {
-        return Err("você já está transmitindo".into());
-    }
+    let (gen, sig, ice) = {
+        let guard = shared.lock().unwrap();
+        let room = guard.as_ref().ok_or("você não está em uma sala")?;
+        if room.streamer.is_some() {
+            return Err("você já está transmitindo".into());
+        }
+        (room.generation, room.sig.clone(), room.ice.clone())
+    };
 
     let (format, bitrate_kbps) = quality(&quality_preset);
     let monitors = capture::list_monitors();
@@ -224,24 +233,8 @@ pub fn start_stream(
         relay_saver: false,
     };
 
-    let streamer = Arc::new(Streamer::new(&cfg, room.sig.clone(), room.ice.clone()).map_err(|e| format!("{e:#}"))?);
+    let streamer = Arc::new(Streamer::new(&cfg, sig, ice).map_err(|e| format!("{e:#}"))?);
     streamer.start().map_err(|e| format!("{e:#}"))?;
-
-    let bus_task = {
-        let (app, shared, gen) = (app.clone(), shared.clone(), room.generation);
-        let bus = streamer.pipeline().bus().expect("bus");
-        let s = streamer.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut msgs = bus.stream();
-            while let Some(msg) = msgs.next().await {
-                if let Err(e) = s.handle_bus(&msg) {
-                    log::error!("stream pipeline: {e:#}");
-                    end_stream(&app, &shared, gen, Some(format!("{e:#}")));
-                    return;
-                }
-            }
-        })
-    };
 
     let status = StreamStatus {
         active: true,
@@ -250,7 +243,45 @@ pub fn start_stream(
         relayed: 0,
         error: None,
     };
-    room.streamer = Some(Active { obj: streamer, bus_task });
+
+    {
+        let mut guard = shared.lock().unwrap();
+        let Some(room) = guard.as_mut().filter(|r| r.generation == gen) else {
+            drop(guard);
+            streamer.stop();
+            return Err("você saiu da sala".into());
+        };
+        if room.streamer.is_some() {
+            drop(guard);
+            streamer.stop();
+            return Err("você já está transmitindo".into());
+        }
+        let bus_task = {
+            let (app, shared) = (app.clone(), shared.clone());
+            let bus = streamer.pipeline().bus().expect("bus");
+            let s = streamer.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut msgs = bus.stream();
+                while let Some(msg) = msgs.next().await {
+                    match s.handle_bus(&msg) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            log::info!("stream pipeline ended (EOS)");
+                            end_stream(&app, &shared, gen, None);
+                            return;
+                        }
+                        Err(e) => {
+                            log::error!("stream pipeline: {e:#}");
+                            end_stream(&app, &shared, gen, Some(format!("{e:#}")));
+                            return;
+                        }
+                    }
+                }
+            })
+        };
+        room.streamer = Some(Active { obj: streamer, bus_task });
+    }
+
     let _ = app.emit("stream-status", status.clone());
     Ok(status)
 }
@@ -266,38 +297,22 @@ pub fn stop_stream(app: AppHandle, state: State<'_, AppState>) {
 #[tauri::command]
 pub fn watch(app: AppHandle, state: State<'_, AppState>, peer_id: String) -> CmdResult<WatchStatus> {
     let shared = state.room.clone();
-    let mut guard = shared.lock().unwrap();
-    let room = guard.as_mut().ok_or("você não está em uma sala")?;
-    let peer = room.peers.iter().find(|p| p.id == peer_id).cloned().ok_or("essa pessoa saiu da sala")?;
-    if !peer.streaming {
-        return Err(format!("{} não está transmitindo", peer.name));
-    }
-    if let Some(old) = room.viewer.take() {
+    let (gen, peer, sig, ice, old) = {
+        let mut guard = shared.lock().unwrap();
+        let room = guard.as_mut().ok_or("você não está em uma sala")?;
+        let peer = room.peers.iter().find(|p| p.id == peer_id).cloned().ok_or("essa pessoa saiu da sala")?;
+        if !peer.streaming {
+            return Err(format!("{} não está transmitindo", peer.name));
+        }
+        (room.generation, peer, room.sig.clone(), room.ice.clone(), room.viewer.take())
+    };
+    if let Some(old) = old {
         old.bus_task.abort();
         old.obj.stop();
     }
 
-    let viewer = Arc::new(Viewer::new(peer.clone(), room.sig.clone(), &room.ice, false).map_err(|e| format!("{e:#}"))?);
+    let viewer = Arc::new(Viewer::new(peer.clone(), sig, &ice, false).map_err(|e| format!("{e:#}"))?);
     viewer.start().map_err(|e| format!("{e:#}"))?;
-
-    let bus_task = {
-        let (app, shared, gen) = (app.clone(), shared.clone(), room.generation);
-        let bus = viewer.pipeline().bus().expect("bus");
-        let v = viewer.clone();
-        tauri::async_runtime::spawn(async move {
-            let mut msgs = bus.stream();
-            while let Some(msg) = msgs.next().await {
-                let end = match v.handle_bus(&msg) {
-                    Ok(None) => continue,
-                    Ok(Some(ViewEnd::UserStopped)) => "closed".to_string(),
-                    Ok(Some(ViewEnd::StreamEnded)) => "ended".to_string(),
-                    Err(e) => format!("{e:#}"),
-                };
-                end_watch(&app, &shared, gen, &v, end);
-                return;
-            }
-        })
-    };
 
     let status = WatchStatus {
         active: true,
@@ -305,7 +320,39 @@ pub fn watch(app: AppHandle, state: State<'_, AppState>, peer_id: String) -> Cmd
         streamer_name: Some(peer.name),
         ..Default::default()
     };
-    room.viewer = Some(Active { obj: viewer, bus_task });
+
+    let displaced = {
+        let mut guard = shared.lock().unwrap();
+        let Some(room) = guard.as_mut().filter(|r| r.generation == gen) else {
+            drop(guard);
+            viewer.stop();
+            return Err("você saiu da sala".into());
+        };
+        let bus_task = {
+            let (app, shared) = (app.clone(), shared.clone());
+            let bus = viewer.pipeline().bus().expect("bus");
+            let v = viewer.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut msgs = bus.stream();
+                while let Some(msg) = msgs.next().await {
+                    let end = match v.handle_bus(&msg) {
+                        Ok(None) => continue,
+                        Ok(Some(ViewEnd::UserStopped)) => "closed".to_string(),
+                        Ok(Some(ViewEnd::StreamEnded)) => "ended".to_string(),
+                        Err(e) => format!("{e:#}"),
+                    };
+                    end_watch(&app, &shared, gen, &v, end);
+                    return;
+                }
+            })
+        };
+        room.viewer.replace(Active { obj: viewer, bus_task })
+    };
+    if let Some(old) = displaced {
+        old.bus_task.abort();
+        old.obj.stop();
+    }
+
     let _ = app.emit("watch-status", status.clone());
     Ok(status)
 }
@@ -364,11 +411,17 @@ async fn join(app: AppHandle, shared: Shared, server: Server, code: String, name
         loop_task: None,
     };
     let view = room.view();
-    *shared.lock().unwrap() = Some(room);
+    let previous = shared.lock().unwrap().replace(room);
+    if let Some(old) = previous {
+        shutdown(old);
+    }
 
     let task = tauri::async_runtime::spawn(room_loop(app, shared.clone(), generation, events));
-    if let Some(r) = shared.lock().unwrap().as_mut().filter(|r| r.generation == generation) {
+    let mut guard = shared.lock().unwrap();
+    if let Some(r) = guard.as_mut().filter(|r| r.generation == generation) {
         r.loop_task = Some(task);
+    } else {
+        task.abort();
     }
     Ok(view)
 }
@@ -418,29 +471,37 @@ async fn room_loop(app: AppHandle, shared: Shared, gen: u64, mut events: tokio::
                 };
                 ticks += 1;
                 if let Some(s) = streamer {
-                    let viewers = s.tick();
-                    if ticks % 15 == 0 {
-                        s.report_relay_usage();
+                    let s_tick = s.clone();
+                    if let Ok(viewers) = tauri::async_runtime::spawn_blocking(move || s_tick.tick()).await {
+                        if ticks.is_multiple_of(15) {
+                            s.report_relay_usage();
+                        }
+                        let _ = app.emit("stream-status", StreamStatus {
+                            active: true,
+                            encoder: Some(s.encoder.label.to_string()),
+                            viewers: viewers.len(),
+                            relayed: viewers.iter().filter(|v| v.relayed == Some(true)).count(),
+                            error: None,
+                        });
                     }
-                    let _ = app.emit("stream-status", StreamStatus {
-                        active: true,
-                        encoder: Some(s.encoder.label.to_string()),
-                        viewers: viewers.len(),
-                        relayed: viewers.iter().filter(|v| v.relayed == Some(true)).count(),
-                        error: None,
-                    });
                 }
                 match viewer {
                     Some(v) => {
                         let frames = v.stats().video_frames;
                         let fps = frames.saturating_sub(last_frames) as f64 / last_at.elapsed().as_secs_f64();
                         (last_frames, last_at) = (frames, Instant::now());
+                        let v_relay = v.clone();
+                        let relayed = tauri::async_runtime::spawn_blocking(move || v_relay.is_relayed())
+                            .await
+                            .ok()
+                            .flatten()
+                            == Some(true);
                         let _ = app.emit("watch-status", WatchStatus {
                             active: true,
                             streamer_id: Some(v.streamer().id.clone()),
                             streamer_name: Some(v.streamer().name.clone()),
                             fps: fps.round(),
-                            relayed: v.is_relayed() == Some(true),
+                            relayed,
                             ended: None,
                         });
                     }
@@ -457,7 +518,11 @@ fn on_message(app: &AppHandle, shared: &Shared, gen: u64, msg: ServerMsg) {
         let Some(room) = guard.as_mut().filter(|r| r.generation == gen) else { return };
         let changed = match &msg {
             ServerMsg::PeerJoined { peer } => {
-                room.peers.push(peer.clone());
+                if let Some(existing) = room.peers.iter_mut().find(|p| p.id == peer.id) {
+                    *existing = peer.clone();
+                } else {
+                    room.peers.push(peer.clone());
+                }
                 true
             }
             ServerMsg::PeerLeft { id } => {
@@ -504,11 +569,14 @@ fn end_stream(app: &AppHandle, shared: &Shared, gen: u64, error: Option<String>)
         let mut guard = shared.lock().unwrap();
         guard.as_mut().filter(|r| r.generation == gen).and_then(|r| r.streamer.take())
     };
+    let had_stream = active.is_some();
     if let Some(s) = active {
-        s.obj.stop();
         s.bus_task.abort();
+        s.obj.stop();
     }
-    let _ = app.emit("stream-status", StreamStatus { error, ..Default::default() });
+    if had_stream || error.is_some() {
+        let _ = app.emit("stream-status", StreamStatus { error, ..Default::default() });
+    }
 }
 
 /// Stops watching `which` (ignored if we've since switched to another stream).
@@ -522,8 +590,8 @@ fn end_watch(app: &AppHandle, shared: &Shared, gen: u64, which: &Arc<Viewer>, re
         }
     };
     if let Some(v) = active {
-        v.obj.stop();
         v.bus_task.abort();
+        v.obj.stop();
         let _ = app.emit("watch-status", WatchStatus { ended: Some(reason), ..Default::default() });
     }
 }

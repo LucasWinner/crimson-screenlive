@@ -10,11 +10,6 @@ Uma alternativa ao "Go Live" do Discord para quando ele não funciona.
 
 ## Baixar e usar (Windows 10/11)
 
-Duas opções, mesmo app:
-- **Portátil (`CrimsonScreenLive_x.y.z_x64-portable.exe`)** — um único arquivo, não instala nada: é só abrir. Na primeira vez ele descompacta o app em `%LOCALAPPDATA%CrimsonScreenLiveportable` (~3 s); depois abre direto.
-- **Instalador (`..._x64-setup.exe`)** — instala com atalho no Menu Iniciar e desinstalador.
-
-
 1. Baixe o instalador em [Releases](../../releases/latest) (`CrimsonScreenLive_x.y.z_x64-setup.exe`) e instale.
    > O Windows pode mostrar "O Windows protegeu o computador" porque o app não é assinado. Clique em **Mais informações → Executar assim mesmo**.
 2. Abra o **Crimson ScreenLive**, escolha um apelido.
@@ -60,7 +55,7 @@ O `npm run build` copia só os plugins/DLLs do GStreamer que o app usa (~36 MB) 
 
 Servidor de salas local: `cd signaling; npm install; npm run dev` e aponte o app para `http://127.0.0.1:8787` em ⚙️ Configurações.
 
-Testes: `cargo test --workspace` · `bash scripts/e2e.sh` (com o servidor local rodando).
+Testes: `cargo test --workspace` · `cargo clippy --workspace --all-targets` · `bash scripts/e2e.sh` (com o servidor local rodando).
 
 ### Chave do app
 
@@ -85,7 +80,7 @@ O app de quem transmite informa ao servidor quantos bytes enviou pelo TURN; o se
 
 ## Status
 
-- ✅ Windows: transmitir e assistir, até 4 espectadores, áudio do sistema, TURN com 720p automático e teto mensal.
+- ✅ Windows: transmitir e assistir, até 4 espectadores, áudio do sistema, TURN com teto mensal.
 - 🚧 Linux: o app compila, mas a captura de tela (PipeWire/portal) ainda não foi implementada.
 
 ## Licença

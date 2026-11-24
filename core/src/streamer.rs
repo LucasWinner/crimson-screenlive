@@ -99,6 +99,13 @@ struct Inner {
     fps: u32,
     relay_saver: AtomicBool,
     relay_bytes: AtomicU64,
+    next_peer_seq: AtomicU64,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -198,6 +205,7 @@ impl Streamer {
                 fps: cfg.format.fps,
                 relay_saver: AtomicBool::new(relay_saver),
                 relay_bytes: AtomicU64::new(0),
+                next_peer_seq: AtomicU64::new(1),
             }),
             encoder: spec,
         })
@@ -218,14 +226,22 @@ impl Streamer {
     }
 
     pub fn stop(&self) {
-        let ids: Vec<String> = self.inner.peers.lock().unwrap().keys().cloned().collect();
-        for id in ids {
-            self.inner.sig.signal(&id, Payload::Bye);
-            remove_peer(&self.inner, &id);
+        let peers: Vec<(String, PeerConn)> = self.inner.peers.lock().unwrap().drain().collect();
+        for (id, _) in &peers {
+            self.inner.sig.signal(id, Payload::Bye);
         }
         self.report_relay_usage();
         self.inner.sig.send(ClientMsg::Stream { streaming: false });
         let _ = self.inner.pipeline.set_state(gst::State::Null);
+        for (_, peer) in peers {
+            for b in std::iter::once(peer.video).chain(peer.audio) {
+                if let Some(tee) = b.tee_pad.parent_element() {
+                    tee.release_request_pad(&b.tee_pad);
+                }
+                let _ = self.inner.pipeline.remove(&b.elem);
+            }
+            let _ = self.inner.pipeline.remove(&peer.webrtc);
+        }
     }
 
     pub fn handle(&self, msg: ServerMsg) {
@@ -339,7 +355,7 @@ impl Streamer {
                 _ = tick.tick() => {
                     self.tick();
                     ticks += 1;
-                    if ticks % 15 == 0 {
+                    if ticks.is_multiple_of(15) {
                         self.report_relay_usage();
                     }
                 }
@@ -348,20 +364,6 @@ impl Streamer {
         };
         self.stop();
         result
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rtp_fragments_parse() {
-        gst::init().unwrap();
-        gst::parse::launch(PARSE).unwrap();
-        gst::parse::bin_from_description(PEER_VIDEO, true).unwrap();
-        gst::parse::bin_from_description(&format!("opusenc ! {AUDIO_RTP}"), true).unwrap();
-        gst::parse::launch(PEER_QUEUE).unwrap();
     }
 }
 
@@ -430,7 +432,8 @@ fn add_peer(inner: &Arc<Inner>, id: &str) -> Result<()> {
         return Ok(());
     }
 
-    let webrtc = webrtc::new_webrtcbin(&format!("peer-{id}"), &inner.ice, &inner.sig, id)?;
+    let seq = inner.next_peer_seq.fetch_add(1, Ordering::Relaxed);
+    let webrtc = webrtc::new_webrtcbin(&format!("peer-{id}-{seq}"), &inner.ice, &inner.sig, id)?;
     {
         let (sig, remote) = (inner.sig.clone(), id.to_owned());
         webrtc.connect("on-negotiation-needed", false, move |values| {
@@ -462,20 +465,49 @@ fn add_peer(inner: &Arc<Inner>, id: &str) -> Result<()> {
     let attach = |tee: &gst::Element, elem: gst::Element| -> Result<Branch> {
         inner.pipeline.add(&elem)?;
         let tee_pad = tee.request_pad_simple("src_%u").context("tee pad")?;
-        tee_pad.link(&elem.static_pad("sink").unwrap())?;
-        let sink = webrtc.request_pad_simple("sink_%u").context("webrtcbin sink pad")?;
-        elem.static_pad("src").unwrap().link(&sink)?;
-        let transceiver = sink.property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
-        transceiver.set_property("direction", gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly);
-        elem.sync_state_with_parent()?;
+        if let Err(e) = (|| -> Result<()> {
+            tee_pad.link(&elem.static_pad("sink").unwrap())?;
+            let sink = webrtc.request_pad_simple("sink_%u").context("webrtcbin sink pad")?;
+            elem.static_pad("src").unwrap().link(&sink)?;
+            let transceiver = sink.property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
+            transceiver.set_property("direction", gst_webrtc::WebRTCRTPTransceiverDirection::Sendonly);
+            elem.sync_state_with_parent()?;
+            Ok(())
+        })() {
+            tee.release_request_pad(&tee_pad);
+            let _ = elem.set_state(gst::State::Null);
+            let _ = inner.pipeline.remove(&elem);
+            return Err(e);
+        }
         Ok(Branch { tee_pad, elem })
     };
-    let video = attach(&inner.high.tee, gst::parse::bin_from_description(PEER_VIDEO, true)?.upcast())?;
-    let audio = match &inner.atee {
-        Some(atee) => Some(attach(atee, gst::parse::launch(PEER_QUEUE)?)?),
-        None => None,
+    let setup = (|| -> Result<(Branch, Option<Branch>)> {
+        let video = attach(&inner.high.tee, gst::parse::bin_from_description(PEER_VIDEO, true)?.upcast())?;
+        let audio = match &inner.atee {
+            Some(atee) => match attach(atee, gst::parse::launch(PEER_QUEUE)?) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    if let Some(t) = video.tee_pad.parent_element() {
+                        t.release_request_pad(&video.tee_pad);
+                    }
+                    let _ = video.elem.set_state(gst::State::Null);
+                    let _ = inner.pipeline.remove(&video.elem);
+                    return Err(e);
+                }
+            },
+            None => None,
+        };
+        webrtc.sync_state_with_parent()?;
+        Ok((video, audio))
+    })();
+    let (video, audio) = match setup {
+        Ok(pair) => pair,
+        Err(e) => {
+            let _ = webrtc.set_state(gst::State::Null);
+            let _ = inner.pipeline.remove(&webrtc);
+            return Err(e);
+        }
     };
-    webrtc.sync_state_with_parent()?;
 
     inner.peers.lock().unwrap().insert(
         id.to_owned(),
@@ -524,4 +556,18 @@ fn remove_peer(inner: &Inner, id: &str) {
         let _ = webrtc.set_state(gst::State::Null);
         let _ = pipeline.remove(&webrtc);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rtp_fragments_parse() {
+        gst::init().unwrap();
+        gst::parse::launch(PARSE).unwrap();
+        gst::parse::bin_from_description(PEER_VIDEO, true).unwrap();
+        gst::parse::bin_from_description(&format!("opusenc ! {AUDIO_RTP}"), true).unwrap();
+        gst::parse::launch(PEER_QUEUE).unwrap();
+    }
 }

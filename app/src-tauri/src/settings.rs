@@ -7,8 +7,6 @@ use tauri::{AppHandle, Manager};
 
 /// Default signaling server (Cloudflare Worker in `signaling/`).
 pub const DEFAULT_SERVER: &str = "https://seu-worker.workers.dev";
-/// Pre-deploy default; settings still pointing here are migrated to DEFAULT_SERVER.
-const OLD_LOCAL_DEFAULT: &str = "http://127.0.0.1:8787";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -65,7 +63,7 @@ pub fn load(app: &AppHandle) -> Settings {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    if s.server_url.is_empty() || s.server_url == OLD_LOCAL_DEFAULT {
+    if s.server_url.trim().is_empty() {
         s.server_url = DEFAULT_SERVER.into();
     }
     if !s.audio {
@@ -81,11 +79,49 @@ pub fn get_settings(app: AppHandle) -> Settings {
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+pub fn save_settings(app: AppHandle, mut settings: Settings) -> Result<(), String> {
+    settings.nickname = settings.nickname.trim().to_string();
+    settings.server_url = settings.server_url.trim().trim_end_matches('/').to_string();
+    if settings.server_url.is_empty() {
+        settings.server_url = DEFAULT_SERVER.into();
+    } else {
+        screenlive_core::signaling::Server::new(&settings.server_url).map_err(|e| e.to_string())?;
+    }
     let p = path(&app).ok_or("no config directory")?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(p, json).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use screenlive_core::procs::AudioChoice;
+
+    #[test]
+    fn audio_choice_mapping() {
+        let mut s = Settings::default();
+        assert_eq!(s.audio_choice(), AudioChoice::AllExcept("Discord.exe".into()));
+
+        s.audio_exclude.clear();
+        assert_eq!(s.audio_choice(), AudioChoice::AllButDiscord);
+
+        s.audio_mode = "app".into();
+        s.audio_app = "game.exe".into();
+        assert_eq!(s.audio_choice(), AudioChoice::App("game.exe".into()));
+
+        s.audio_mode = "all".into();
+        assert_eq!(s.audio_choice(), AudioChoice::All);
+
+        s.audio_mode = "none".into();
+        assert_eq!(s.audio_choice(), AudioChoice::None);
+    }
+
+    #[test]
+    fn keeps_local_server_url() {
+        let s: Settings = serde_json::from_str(r#"{"serverUrl":"http://127.0.0.1:8787"}"#).unwrap();
+        assert_eq!(s.server_url, "http://127.0.0.1:8787");
+    }
 }

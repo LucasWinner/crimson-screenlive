@@ -62,7 +62,7 @@ const PUBLIC_STUN = [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.goog
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type",
+  "access-control-allow-headers": "content-type, x-screenlive-key",
 };
 
 function json(body: unknown, status = 200): Response {
@@ -81,7 +81,13 @@ function randomString(len: number): string {
 
 /** Normalizes user-typed codes like "kx7-p2q" -> "KX7P2Q". */
 export function normalizeCode(raw: string): string | null {
-  const code = decodeURIComponent(raw).toUpperCase().replace(/[\s-]/g, "");
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  const code = decoded.toUpperCase().replace(/[\s-]/g, "");
   return CODE_RE.test(code) ? code : null;
 }
 
@@ -221,20 +227,27 @@ export class Room {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const name = cleanName(url.searchParams.get("name"))!;
+    const name = cleanName(url.searchParams.get("name"));
+    if (!name) return json({ error: "missing name" }, 400);
 
+    if (this.ctx.getWebSockets().length >= MAX_PEERS) return json({ error: "room is full" }, 409);
+
+    // Fetch ICE/TURN credentials before accepting the WebSocket so no room
+    // broadcasts can interleave ahead of "welcome".
+    const ice = await memberIce(this.env);
     const sockets = this.ctx.getWebSockets();
     if (sockets.length >= MAX_PEERS) return json({ error: "room is full" }, 409);
 
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     const peer: Peer = { id: randomString(10), name, streaming: false };
+    const others = sockets
+      .map((ws) => ws.deserializeAttachment() as Peer | null)
+      .filter((p): p is Peer => p !== null);
 
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment(peer);
 
-    const others = sockets.map((ws) => ws.deserializeAttachment() as Peer);
-    const ice = await memberIce(this.env);
     server.send(JSON.stringify({ type: "welcome", id: peer.id, peers: others, ...ice }));
     this.broadcast({ type: "peer-joined", peer }, peer.id);
 
@@ -242,7 +255,8 @@ export class Room {
   }
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer): Promise<void> {
-    const me = ws.deserializeAttachment() as Peer;
+    const me = ws.deserializeAttachment() as Peer | null;
+    if (!me) return;
     const size = typeof raw === "string" ? raw.length : raw.byteLength;
     if (typeof raw !== "string" || size > MAX_MESSAGE_BYTES) {
       return this.sendError(ws, "message must be JSON text under 64KB");
@@ -257,6 +271,12 @@ export class Room {
 
     switch (msg.type) {
       case "signal": {
+        if (!msg.payload || typeof msg.payload !== "object" || Array.isArray(msg.payload)) {
+          return this.sendError(ws, "invalid signal payload");
+        }
+        if (msg.to === me.id) {
+          return this.sendError(ws, "cannot signal self");
+        }
         const target = this.findSocket(msg.to);
         if (!target) return this.sendError(ws, `peer ${msg.to} not in room`);
         target.send(JSON.stringify({ type: "signal", from: me.id, payload: msg.payload }));
@@ -299,18 +319,24 @@ export class Room {
 
   private leave(ws: WebSocket): void {
     const me = ws.deserializeAttachment() as Peer | null;
-    if (me) this.broadcast({ type: "peer-left", id: me.id }, me.id);
+    if (!me) return;
+    try {
+      ws.serializeAttachment(null);
+    } catch {
+      /* socket already closed */
+    }
+    this.broadcast({ type: "peer-left", id: me.id }, me.id);
   }
 
   private findSocket(id: unknown): WebSocket | undefined {
     if (typeof id !== "string") return undefined;
-    return this.ctx.getWebSockets().find((ws) => (ws.deserializeAttachment() as Peer).id === id);
+    return this.ctx.getWebSockets().find((ws) => (ws.deserializeAttachment() as Peer | null)?.id === id);
   }
 
   private broadcast(msg: unknown, exceptId: string): void {
     const data = JSON.stringify(msg);
     for (const ws of this.ctx.getWebSockets()) {
-      if ((ws.deserializeAttachment() as Peer).id === exceptId) continue;
+      if ((ws.deserializeAttachment() as Peer | null)?.id === exceptId) continue;
       try {
         ws.send(data);
       } catch {
@@ -338,12 +364,26 @@ export class Usage {
   async fetch(request: Request): Promise<Response> {
     const month = Usage.month();
     const key = `bytes:${month}`;
-    const current = (await this.ctx.storage.get<number>(key)) ?? 0;
     if (request.method === "POST") {
-      const { bytes } = (await request.json()) as { bytes: number };
-      await this.ctx.storage.put(key, current + bytes);
-      return json({ month, bytes: current + bytes });
+      let bytes: number;
+      try {
+        const body = (await request.json()) as { bytes?: unknown };
+        bytes = Number(body.bytes);
+      } catch {
+        return json({ error: "invalid JSON" }, 400);
+      }
+      if (!Number.isFinite(bytes) || bytes <= 0 || bytes > MAX_REPORT_BYTES) {
+        return json({ error: "invalid bytes" }, 400);
+      }
+      const next = await this.ctx.storage.transaction(async (txn) => {
+        const current = (await txn.get<number>(key)) ?? 0;
+        const updated = current + bytes;
+        await txn.put(key, updated);
+        return updated;
+      });
+      return json({ month, bytes: next });
     }
+    const current = (await this.ctx.storage.get<number>(key)) ?? 0;
     return json({ month, bytes: current });
   }
 }

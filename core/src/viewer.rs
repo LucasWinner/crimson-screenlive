@@ -1,14 +1,15 @@
 //! Viewer: webrtcbin -> decodebin (hardware decode when available) -> native video window.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use futures_util::StreamExt;
 use gst::prelude::*;
 use tokio::sync::mpsc;
 
+use crate::encoder;
 use crate::ice::IceServer;
 use crate::protocol::{Payload, Peer, ServerMsg};
 use crate::signaling::SignalingHandle;
@@ -70,6 +71,13 @@ pub struct Viewer {
     sig: SignalingHandle,
     video_frames: Arc<AtomicU64>,
     audio_buffers: Arc<AtomicU64>,
+    stopped: AtomicBool,
+}
+
+impl Drop for Viewer {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
+    }
 }
 
 impl Viewer {
@@ -79,6 +87,20 @@ impl Viewer {
         // Jitter buffer: small enough to feel live, big enough to absorb Wi-Fi jitter.
         webrtc.set_property("latency", 120u32);
         pipeline.add(&webrtc)?;
+
+        {
+            let pipe_weak = pipeline.downgrade();
+            webrtc.connect_notify(Some("connection-state"), move |w, _| {
+                use gst_webrtc::WebRTCPeerConnectionState as S;
+                if matches!(w.property::<S>("connection-state"), S::Failed) {
+                    if let Some(pipeline) = pipe_weak.upgrade() {
+                        let _ = pipeline.post_message(gst::message::Application::new(
+                            gst::Structure::new_empty("connection-failed"),
+                        ));
+                    }
+                }
+            });
+        }
 
         let video_frames = Arc::new(AtomicU64::new(0));
         let audio_buffers = Arc::new(AtomicU64::new(0));
@@ -94,7 +116,7 @@ impl Viewer {
             }
         });
 
-        Ok(Self { pipeline, webrtc, streamer, sig, video_frames, audio_buffers })
+        Ok(Self { pipeline, webrtc, streamer, sig, video_frames, audio_buffers, stopped: AtomicBool::new(false) })
     }
 
     pub fn stats(&self) -> ViewStats {
@@ -149,11 +171,27 @@ impl Viewer {
 
     /// Interprets a pipeline bus message. Returns `Some` when watching should end.
     pub fn handle_bus(&self, msg: &gst::Message) -> Result<Option<ViewEnd>> {
-        if let gst::MessageView::Error(e) = msg.view() {
-            // The native video window was closed by the user.
-            if e.error().message().contains("closed") {
-                return Ok(Some(ViewEnd::UserStopped));
+        match msg.view() {
+            gst::MessageView::Error(e) => {
+                // The native video window was closed by the user.
+                let err = e.error();
+                let text = err.message();
+                let from_videosink = e
+                    .src()
+                    .is_some_and(|s| s.type_().name().to_ascii_lowercase().contains("videosink"));
+                if text.contains("Output window was closed")
+                    || text.contains("Window was closed")
+                    || (from_videosink && text.contains("closed"))
+                {
+                    return Ok(Some(ViewEnd::UserStopped));
+                }
             }
+            gst::MessageView::Application(app)
+                if app.structure().is_some_and(|s| s.name() == "connection-failed") =>
+            {
+                return Err(anyhow!("P2P connection failed (network/NAT blocked the connection)"));
+            }
+            _ => {}
         }
         match webrtc::check_bus_message(msg)? {
             true => Ok(None),
@@ -170,13 +208,16 @@ impl Viewer {
             .into_iter()
             .flatten()
             .find(|e| e.find_property("fullscreen").is_some())?;
+        configure_fullscreen_sink(&sink);
         let on = !sink.property::<bool>("fullscreen");
         sink.set_property("fullscreen", on);
         Some(on)
     }
 
     pub fn stop(&self) {
-        self.sig.signal(&self.streamer.id, Payload::Bye);
+        if !self.stopped.swap(true, Ordering::SeqCst) {
+            self.sig.signal(&self.streamer.id, Payload::Bye);
+        }
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 
@@ -228,6 +269,13 @@ impl Viewer {
     }
 }
 
+fn configure_fullscreen_sink(elem: &gst::Element) {
+    // d3d11videosink ignores `fullscreen` unless `fullscreen-toggle-mode`
+    // includes `property`; enable Alt+Enter on d3d11/d3d12 as well.
+    encoder::set_if(elem, "fullscreen-toggle-mode", "property+alt-enter");
+    encoder::set_if(elem, "fullscreen-on-alt-enter", "true");
+}
+
 fn on_incoming_stream(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
@@ -245,18 +293,21 @@ fn on_incoming_stream(
             .and_then(|c| c.structure(0))
             .map(|s| s.name().to_string())
             .unwrap_or_default();
-        let (desc, counter) = if media.starts_with("video/") {
+        let (desc, counter, is_video) = if media.starts_with("video/") {
             let sink = if headless { "fakesink sync=false" } else { "autovideosink" };
-            (format!("queue max-size-buffers=3 ! {sink}"), video_frames.clone())
+            (format!("queue max-size-buffers=3 ! {sink}"), video_frames.clone(), true)
         } else if media.starts_with("audio/") {
             let sink = if headless { "fakesink sync=false" } else { "autoaudiosink" };
-            (format!("queue ! audioconvert ! audioresample ! {sink}"), audio_buffers.clone())
+            (format!("queue ! audioconvert ! audioresample ! {sink}"), audio_buffers.clone(), false)
         } else {
             log::warn!("ignoring unknown stream {media}");
             return;
         };
         let res: Result<()> = (|| {
             let bin = gst::parse::bin_from_description(&desc, true)?;
+            if is_video && !headless {
+                bin.connect_deep_element_added(|_, _, elem| configure_fullscreen_sink(elem));
+            }
             pipeline.add(&bin)?;
             bin.sync_state_with_parent()?;
             let sink = bin.static_pad("sink").unwrap();

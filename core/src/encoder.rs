@@ -30,6 +30,7 @@ const CANDIDATES: &[EncoderSpec] = &[
     EncoderSpec { factory: "qsvh264enc", label: "Intel Quick Sync", hardware: true, memory: Memory::D3D11 },
     EncoderSpec { factory: "mfh264enc", label: "Media Foundation", hardware: true, memory: Memory::D3D11 },
     EncoderSpec { factory: "x264enc", label: "x264 (CPU)", hardware: false, memory: Memory::System },
+    EncoderSpec { factory: "openh264enc", label: "OpenH264 (CPU)", hardware: false, memory: Memory::System },
 ];
 
 #[cfg(not(windows))]
@@ -39,6 +40,7 @@ const CANDIDATES: &[EncoderSpec] = &[
     EncoderSpec { factory: "nvh264enc", label: "NVIDIA NVENC", hardware: true, memory: Memory::System },
     EncoderSpec { factory: "qsvh264enc", label: "Intel Quick Sync", hardware: true, memory: Memory::System },
     EncoderSpec { factory: "x264enc", label: "x264 (CPU)", hardware: false, memory: Memory::System },
+    EncoderSpec { factory: "openh264enc", label: "OpenH264 (CPU)", hardware: false, memory: Memory::System },
 ];
 
 /// Hardware encoder plugins only register factories when a usable device exists,
@@ -142,6 +144,16 @@ pub fn build(spec: &EncoderSpec, s: &EncoderSettings) -> Result<gst::Element> {
             set_if(&enc, "bitrate", &br);
             set_if(&enc, "key-int-max", &gop);
             set_if(&enc, "bframes", "0");
+        }
+        "openh264enc" => {
+            let bps = (s.bitrate_kbps as u64 * 1000).min(u32::MAX as u64).to_string();
+            set_if(&enc, "usage-type", "screen");
+            set_if(&enc, "rate-control", "bitrate");
+            set_if(&enc, "complexity", "low");
+            set_if(&enc, "bitrate", &bps);
+            set_if(&enc, "max-bitrate", &bps);
+            set_if(&enc, "gop-size", &gop);
+            set_if(&enc, "enable-frame-skip", "false");
         }
         _ => {}
     }

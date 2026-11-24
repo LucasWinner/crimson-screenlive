@@ -14,7 +14,7 @@ new_sqlite_classes = ["Room"]
 # Optional secrets (set with `npx wrangler secret put <NAME>`):
 #   TURN_KEY_ID         - Cloudflare Realtime TURN key id
 #   TURN_KEY_API_TOKEN  - Cloudflare Realtime TURN key API token
-# Without them, /ice returns STUN only (works for most home networks).
+# Without them, rooms return STUN only (works for most home networks).
 
 [[durable_objects.bindings]]
 name = "USAGE"

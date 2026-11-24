@@ -37,7 +37,7 @@ function dumpbin() {
   const vswhere = "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe";
   const vs = execFileSync(vswhere, ["-latest", "-products", "*", "-property", "installationPath"]).toString().trim();
   const msvc = path.join(vs, "VC", "Tools", "MSVC");
-  const ver = readdirSync(msvc).sort().at(-1);
+  const ver = readdirSync(msvc).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1);
   return path.join(msvc, ver, "bin", "Hostx64", "x64", "dumpbin.exe");
 }
 const DUMPBIN = dumpbin();

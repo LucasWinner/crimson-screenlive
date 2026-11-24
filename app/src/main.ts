@@ -51,12 +51,22 @@ const ui = {
   watchStats: $("watch-stats"),
   stopWatch: $("stop-watch"),
   settingsDialog: $<HTMLDialogElement>("settings"),
+  settingsForm: document.querySelector<HTMLFormElement>("#settings form")!,
+  settingsError: $("settings-error"),
   openSettings: $("open-settings"),
   serverUrl: $<HTMLInputElement>("server-url"),
   toast: $("toast"),
 };
 
-let settings: Settings;
+let settings: Settings = {
+  nickname: "",
+  serverUrl: "",
+  monitorId: null,
+  quality: "1080p60",
+  audioMode: "all-except",
+  audioExclude: "Discord.exe",
+  audioApp: "",
+};
 let room: RoomView | null = null;
 let streaming = false;
 let watchingId: string | null = null;
@@ -76,8 +86,10 @@ function toast(msg: string, ok = false) {
 /** Turns backend errors into something a friend can understand. */
 function friendly(e: unknown): string {
   const s = String(e);
-  if (/could not (reach|join)|error sending request|Connection refused|os error 10061|dns/i.test(s))
+  if (/could not (reach|join)|timed out|error sending request|Connection refused|os error 10061|dns/i.test(s))
     return "Não foi possível conectar ao servidor. Verifique sua internet ou o endereço nas configurações.";
+  if (/P2P connection failed/i.test(s))
+    return "Não foi possível estabelecer conexão de vídeo com quem transmite (rede ou firewall bloqueou).";
   if (/room is full|409/i.test(s)) return "A sala está cheia.";
   if (/no H\.264 encoder/i.test(s)) return "Nenhum codificador de vídeo encontrado neste PC.";
   return s.replace(/^Error: /, "");
@@ -217,6 +229,7 @@ function renderWatch(w: WatchStatus) {
 // ---- actions
 
 async function enterRoom(action: "create" | "join") {
+  await ready;
   const name = ui.nickname.value.trim();
   if (!name) {
     ui.nickname.focus();
@@ -279,7 +292,7 @@ let audioInfo: AudioSources | null = null;
 function exeLabel(exe: string) {
   const app = audioInfo?.apps.find((a) => a.exe.toLowerCase() === exe.toLowerCase());
   if (/^discord/i.test(exe)) return "Discord (vozes da call)";
-  return app ? app.title : exe.replace(/.exe$/i, "");
+  return app ? app.title : exe.replace(/\.exe$/i, "");
 }
 
 function renderAudioSummary() {
@@ -324,7 +337,7 @@ async function loadAudioSources() {
   // Keep saved picks selectable even if that program is closed right now.
   for (const [sel, exe] of [[ui.audioExclude, settings.audioExclude], [ui.audioApp, settings.audioApp]] as const) {
     if (exe && ![...sel.options].some((o) => o.value.toLowerCase() === exe.toLowerCase())) {
-      sel.append(option(exe, `${exe.replace(/.exe$/i, "")} (fechado agora)`));
+      sel.append(option(exe, `${exe.replace(/\.exe$/i, "")} (fechado agora)`));
     }
     const match = [...sel.options].find((o) => o.value.toLowerCase() === exe.toLowerCase());
     if (match) sel.value = match.value;
@@ -359,38 +372,50 @@ ui.copyCode.onclick = async () => {
   }
 };
 ui.leave.onclick = async () => {
-  await invoke("leave_room");
+  await invoke("leave_room").catch((e) => toast(friendly(e)));
   showRoom(null);
 };
 ui.toggleStream.onclick = toggleStream;
-ui.stopWatch.onclick = () => invoke("stop_watch");
+ui.stopWatch.onclick = () => invoke("stop_watch").catch((e) => toast(friendly(e)));
 $("fullscreen").onclick = () => invoke("toggle_fullscreen").catch((e) => toast(friendly(e)));
-function openSettings() {
+async function openSettings() {
+  await ready;
+  ui.settingsError.hidden = true;
   ui.serverUrl.value = settings.serverUrl;
   const radio = document.querySelector<HTMLInputElement>(`input[name="audio-mode"][value="${settings.audioMode}"]`);
   if (radio) radio.checked = true;
   void loadAudioSources();
   ui.settingsDialog.showModal();
 }
-ui.openSettings.onclick = openSettings;
-ui.changeAudio.onclick = openSettings;
+ui.openSettings.onclick = () => void openSettings();
+ui.changeAudio.onclick = () => void openSettings();
 ui.refreshApps.onclick = () => void loadAudioSources();
 document.querySelectorAll<HTMLInputElement>('input[name="audio-mode"]').forEach((r) => (r.onchange = syncAudioInputs));
 ui.audioApp.onchange = () => selectMode("app");
 ui.audioExclude.onchange = () => selectMode("all-except");
-ui.settingsDialog.addEventListener("close", () => {
-  if (ui.settingsDialog.returnValue !== "save") return;
+ui.settingsForm.addEventListener("submit", (e) => {
+  const submitter = e.submitter as HTMLButtonElement | null;
+  if (submitter && submitter.value !== "save") return;
   const url = ui.serverUrl.value.trim().replace(/\/+$/, "");
   if (!/^https?:\/\/.+/.test(url)) {
-    toast("O endereço do servidor precisa começar com http:// ou https://");
+    e.preventDefault();
+    ui.settingsError.textContent = "O endereço do servidor precisa começar com http:// ou https://";
+    ui.settingsError.hidden = false;
     return;
   }
+  const mode = (document.querySelector<HTMLInputElement>('input[name="audio-mode"]:checked')?.value ??
+    settings.audioMode) as Settings["audioMode"];
+  if (mode === "app" && !ui.audioApp.value) {
+    e.preventDefault();
+    ui.settingsError.textContent = "Escolha um programa para usar \"Só um programa\".";
+    ui.settingsError.hidden = false;
+    return;
+  }
+  ui.settingsError.hidden = true;
   settings.serverUrl = url;
-  const mode = document.querySelector<HTMLInputElement>('input[name="audio-mode"]:checked')?.value;
-  if (mode) settings.audioMode = mode as Settings["audioMode"];
+  settings.audioMode = mode;
   if (ui.audioExclude.value) settings.audioExclude = ui.audioExclude.value;
   if (ui.audioApp.value) settings.audioApp = ui.audioApp.value;
-  if (settings.audioMode === "app" && !settings.audioApp) settings.audioMode = "all-except";
   renderAudioSummary();
   void persist();
   toast("Configurações salvas.", true);
@@ -437,4 +462,4 @@ async function init() {
   (settings.nickname ? ui.roomCode : ui.nickname).focus();
 }
 
-init().catch((e) => toast(friendly(e)));
+const ready = init().catch((e) => toast(friendly(e)));

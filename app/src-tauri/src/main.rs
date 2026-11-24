@@ -5,6 +5,7 @@ mod room;
 mod settings;
 
 use room::AppState;
+use tauri::Manager;
 
 /// Installed builds ship GStreamer next to the exe (DLLs) with plugins in
 /// `gstreamer/plugins`. Point GStreamer there so it ignores any system install.
@@ -53,6 +54,11 @@ fn main() {
             room::stop_watch,
             room::toggle_fullscreen,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Crimson ScreenLive");
+        .build(tauri::generate_context!())
+        .expect("error while building Crimson ScreenLive")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                app.state::<AppState>().shutdown();
+            }
+        });
 }

@@ -64,6 +64,7 @@ pub struct Joined {
 pub struct Server {
     base: Url,
     key: Option<String>,
+    http_client: reqwest::Client,
 }
 
 /// Header carrying the app access key (checked by the server).
@@ -74,7 +75,8 @@ fn app_key() -> Option<String> {
     std::env::var("SCREENLIVE_APP_KEY")
         .ok()
         .or_else(|| option_env!("SCREENLIVE_APP_KEY").map(str::to_owned))
-        .filter(|k| !k.trim().is_empty())
+        .map(|k| k.trim().to_owned())
+        .filter(|k| !k.is_empty())
 }
 
 impl Server {
@@ -83,7 +85,11 @@ impl Server {
         if !matches!(base.scheme(), "http" | "https") {
             bail!("server URL must be http(s)://");
         }
-        Ok(Self { base, key: app_key() })
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("building HTTP client")?;
+        Ok(Self { base, key: app_key(), http_client })
     }
 
     pub fn http(&self, path: &str) -> Url {
@@ -96,7 +102,7 @@ impl Server {
         struct R {
             code: String,
         }
-        let mut req = reqwest::Client::new().post(self.http("/rooms"));
+        let mut req = self.http_client.post(self.http("/rooms"));
         if let Some(k) = &self.key {
             req = req.header(KEY_HEADER, k);
         }
@@ -150,12 +156,15 @@ impl Server {
         if let Some(k) = &self.key {
             request.headers_mut().insert(KEY_HEADER, HeaderValue::from_str(k).context("bad app key")?);
         }
-        let (ws, _) = match tokio_tungstenite::connect_async(request).await {
-            Ok(ok) => ok,
-            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) if resp.status().as_u16() == 401 => {
+        let (ws, _) = match tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(request))
+            .await
+        {
+            Ok(Ok(ok)) => ok,
+            Ok(Err(tokio_tungstenite::tungstenite::Error::Http(resp))) if resp.status().as_u16() == 401 => {
                 bail!("invalid app key: this version of the app can't use this server")
             }
-            Err(e) => return Err(anyhow::Error::new(e).context(format!("could not join room {room}"))),
+            Ok(Err(e)) => return Err(anyhow::Error::new(e).context(format!("could not join room {room}"))),
+            Err(_) => bail!("could not reach signaling server (connection timed out)"),
         };
         let (mut sink, mut stream) = ws.split();
 
@@ -165,6 +174,7 @@ impl Server {
         tokio::spawn(async move {
             let mut keepalive = tokio::time::interval(Duration::from_secs(20));
             keepalive.tick().await;
+            let mut awaiting_pong = false;
             loop {
                 tokio::select! {
                     out = out_rx.recv() => {
@@ -173,18 +183,26 @@ impl Server {
                         if sink.send(Message::text(text)).await.is_err() { break }
                     }
                     _ = keepalive.tick() => {
+                        if awaiting_pong {
+                            log::warn!("signaling keepalive timed out");
+                            break;
+                        }
                         let text = serde_json::to_string(&ClientMsg::Ping).unwrap();
                         if sink.send(Message::text(text)).await.is_err() { break }
+                        awaiting_pong = true;
                     }
                     incoming = stream.next() => {
                         match incoming {
-                            Some(Ok(Message::Text(text))) => match serde_json::from_str::<ServerMsg>(&text) {
-                                Ok(ServerMsg::Pong) => {}
-                                Ok(msg) => { if in_tx.send(msg).is_err() { break } }
-                                Err(e) => log::warn!("ignoring bad server message ({e}): {text}"),
-                            },
+                            Some(Ok(Message::Text(text))) => {
+                                awaiting_pong = false;
+                                match serde_json::from_str::<ServerMsg>(&text) {
+                                    Ok(ServerMsg::Pong) => {}
+                                    Ok(msg) => { if in_tx.send(msg).is_err() { break } }
+                                    Err(e) => log::warn!("ignoring bad server message ({e}): {text}"),
+                                }
+                            }
                             Some(Ok(Message::Close(_))) | None => break,
-                            Some(Ok(_)) => {}
+                            Some(Ok(_)) => { awaiting_pong = false; }
                             Some(Err(e)) => { log::warn!("signaling socket error: {e}"); break }
                         }
                     }

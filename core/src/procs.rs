@@ -26,6 +26,7 @@ const IGNORED_EXES: &[&str] = &[
     "startmenuexperiencehost.exe",
     "systemsettings.exe",
     "crimson-screenlive.exe",
+    "crimson screenlive.exe",
 ];
 
 /// Process-loopback capture needs Windows build 20348 or newer.
@@ -93,7 +94,7 @@ pub fn resolve_audio(choice: &AudioChoice) -> anyhow::Result<crate::capture::Aud
             // No Discord: exclude ourselves so watching while streaming doesn't echo.
             None => AudioSource::SystemExcept(std::process::id()),
         },
-        AudioChoice::App(exe) => match find_app(exe) {
+        AudioChoice::App(exe) => match find_root(exe).or_else(|| find_app(exe)) {
             Some(pid) => {
                 log::info!("audio: only {exe} (pid {pid})");
                 AudioSource::App(pid)
@@ -218,13 +219,13 @@ mod imp {
     pub fn find_root(exe: &str) -> Option<u32> {
         let procs = processes();
         let named = |pid: &u32| procs.get(pid).is_some_and(|p| p.exe.eq_ignore_ascii_case(exe));
-        procs.iter().find(|(pid, p)| named(pid) && !named(&p.parent)).map(|(pid, _)| *pid)
+        procs.iter().filter(|(pid, p)| named(pid) && !named(&p.parent)).map(|(pid, _)| *pid).min()
     }
 
     pub fn discord_root_pid() -> Option<u32> {
         let procs = processes();
         let is_discord = |pid: &u32| procs.get(pid).is_some_and(|p| DISCORD_EXES.contains(&p.exe.to_lowercase().as_str()));
-        procs.iter().find(|(pid, p)| is_discord(pid) && !is_discord(&p.parent)).map(|(pid, _)| *pid)
+        procs.iter().filter(|(pid, p)| is_discord(pid) && !is_discord(&p.parent)).map(|(pid, _)| *pid).min()
     }
 }
 
