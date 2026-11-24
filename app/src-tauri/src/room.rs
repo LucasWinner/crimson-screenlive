@@ -218,10 +218,21 @@ fn configured_server(app: &AppHandle) -> CmdResult<Server> {
     Server::with_key(&s.server_url, (!s.server_key.trim().is_empty()).then_some(s.server_key.as_str())).map_err(err)
 }
 
+fn friendly_server_error(e: anyhow::Error) -> String {
+    let msg = format!("{e:#}");
+    if msg.contains("invalid app key") {
+        "chave de acesso inválida ou ausente para este servidor. Cole um convite válido (csl1:...)".to_string()
+    } else if msg.contains("did not answer") {
+        "o servidor não respondeu".to_string()
+    } else {
+        msg
+    }
+}
+
 #[tauri::command]
 pub async fn create_room(app: AppHandle, state: State<'_, AppState>, name: String) -> CmdResult<RoomView> {
     let server = configured_server(&app)?;
-    let code = server.create_room().await.map_err(|e| format!("{e:#}"))?;
+    let code = server.create_room().await.map_err(friendly_server_error)?;
     join(app, state.room.clone(), server, code, name).await
 }
 
@@ -473,16 +484,7 @@ async fn join(app: AppHandle, shared: Shared, server: Server, code: String, name
         shutdown(old);
     }
 
-    let joined = server.enter(&code, &name).await.map_err(|e| {
-        let msg = format!("{e:#}");
-        if msg.contains("invalid app key") {
-            "chave de acesso inválida ou ausente para este servidor. Cole um convite válido em ⚙️ Configurações.".to_string()
-        } else if msg.contains("did not answer") {
-            "o servidor não respondeu".to_string()
-        } else {
-            msg
-        }
-    })?;
+    let joined = server.enter(&code, &name).await.map_err(friendly_server_error)?;
     let (sig, events, me, peers, ice) = (joined.sig, joined.events, joined.me, joined.peers, joined.ice);
 
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);

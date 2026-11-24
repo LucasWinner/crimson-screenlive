@@ -3,6 +3,13 @@
 Todas as mudanças notáveis neste projeto são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e este projeto segue [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.7.1] - 2026-11-24
+
+### Corrigido
+- Tradução da mensagem de chave de acesso inválida/ausente também ao criar sala, reexibindo automaticamente o card **Conectar a um servidor** para colar um convite `csl1:...` válido.
+- Feedback claro ao clicar em **Colar convite** em ⚙️ Configurações (indicando se o convite inclui servidor + chave ou apenas URL) e persistência aguardada antes de criar/entrar na sala.
+- Formatação das notas do manifesto `latest.json` no workflow de release.
+
 ## [0.7.0] - 2026-11-24
 
 ### Adicionado

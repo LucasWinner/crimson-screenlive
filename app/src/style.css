@@ -111,6 +111,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 .settings { display: flex; flex-direction: column; gap: 12px; padding: 18px; }
 .settings h2 { margin: 0; font-size: 17px; text-transform: none; letter-spacing: 0; color: var(--text); }
 .form-error { margin: 0; font-size: 13px; color: var(--crimson-hover); }
+.form-ok { margin: 0; font-size: 13px; color: var(--ok); }
 
 .server-setup { display: flex; flex-direction: column; gap: 10px; border-color: var(--crimson); background: linear-gradient(135deg, var(--crimson-soft), var(--surface) 70%); }
 .setup-title { font-weight: 700; font-size: 15px; }

@@ -75,7 +75,7 @@ jobs:
           if ($changelog -match $pattern) {
             $section = $Matches[1].Trim()
           }
-          $firstLine = ($section -split "\r?\n" | Where-Object { $_ -match "^-\s+" } | Select-Object -First 1) -replace "^-\s+\*\*(.+?)\*\*:?\s*", '$1: '
+          $firstLine = ($section -split "\r?\n" | Where-Object { $_ -match "^-\s+" } | Select-Object -First 1) -replace "^-\s+\*\*(.+?):?\*\*:?\s*", '$1: '
           $updaterNotes = if ($firstLine) { $firstLine } else { "Crimson ScreenLive $tag" }
 
           $releaseBody = @(

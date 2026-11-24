@@ -103,6 +103,7 @@ const ui = {
   settingsDialog: $<HTMLDialogElement>("settings"),
   settingsForm: document.querySelector<HTMLFormElement>("#settings form")!,
   settingsError: $("settings-error"),
+  settingsOk: $("settings-ok"),
   openSettings: $("open-settings"),
   serverUrl: $<HTMLInputElement>("server-url"),
   serverKey: $<HTMLInputElement>("server-key"),
@@ -151,6 +152,8 @@ function friendly(e: unknown): string {
     return "Não foi possível conectar ao servidor. Verifique sua internet ou o endereço nas configurações.";
   if (/P2P connection failed/i.test(s))
     return "Não foi possível estabelecer conexão de vídeo com quem transmite (rede ou firewall bloqueou).";
+  if (/invalid app key|chave de acesso/i.test(s))
+    return "Chave de acesso inválida ou ausente para este servidor. Cole o convite csl1:... abaixo.";
   if (/room is full|409/i.test(s)) return "A sala está cheia.";
   if (/no H\.264 encoder/i.test(s)) return "Nenhum codificador de vídeo encontrado neste PC.";
   return s.replace(/^Error: /, "");
@@ -364,14 +367,27 @@ async function enterRoom(action: "create" | "join") {
     return;
   }
   settings.nickname = name;
-  void persist();
+  await persist();
   const btn = action === "create" ? ui.createRoom : (ui.joinForm.querySelector("button") as HTMLButtonElement);
-  const view = await run(btn, () =>
-    action === "create"
+  if (busy) return;
+  busy = true;
+  btn.disabled = true;
+  try {
+    const view = await (action === "create"
       ? invoke<RoomView>("create_room", { name })
-      : invoke<RoomView>("join_room", { code: ui.roomCode.value, name }),
-  );
-  if (view) showRoom(view);
+      : invoke<RoomView>("join_room", { code: ui.roomCode.value, name }));
+    showRoom(view);
+  } catch (e) {
+    const msg = String(e);
+    if (/invalid app key|chave de acesso/i.test(msg)) {
+      ui.serverSetup.hidden = false;
+      ui.inviteInput.focus();
+    }
+    toast(friendly(e));
+  } finally {
+    busy = false;
+    btn.disabled = false;
+  }
 }
 
 async function startWatching(p: Peer, btn: HTMLButtonElement) {
@@ -669,6 +685,7 @@ $("fullscreen").onclick = () => invoke("toggle_fullscreen").catch((e) => toast(f
 async function openSettings() {
   await ready;
   ui.settingsError.hidden = true;
+  ui.settingsOk.hidden = true;
   ui.serverUrl.value = settings.serverUrl;
   ui.serverKey.value = settings.serverKey;
   ui.serverKey.type = "password";
@@ -695,6 +712,8 @@ ui.toggleKey.onclick = () => {
   ui.toggleKey.textContent = show ? "ocultar" : "mostrar";
 };
 ui.pasteInvite.onclick = async () => {
+  ui.settingsError.hidden = true;
+  ui.settingsOk.hidden = true;
   try {
     const text = await navigator.clipboard.readText();
     const parsed = parseInvite(text);
@@ -703,9 +722,15 @@ ui.pasteInvite.onclick = async () => {
       ui.settingsError.hidden = false;
       return;
     }
-    ui.settingsError.hidden = true;
     ui.serverUrl.value = parsed.serverUrl;
-    ui.serverKey.value = parsed.serverKey;
+    if (parsed.serverKey) {
+      ui.serverKey.value = parsed.serverKey;
+      ui.settingsOk.textContent = "Convite aplicado (servidor + chave). Clique em Salvar para confirmar.";
+      ui.settingsOk.hidden = false;
+    } else {
+      ui.settingsError.textContent = "Você colou apenas a URL (sem chave de acesso). Se o servidor exigir chave, copie o código csl1:... completo.";
+      ui.settingsError.hidden = false;
+    }
   } catch {
     ui.settingsError.textContent = "Não foi possível ler a área de transferência.";
     ui.settingsError.hidden = false;
