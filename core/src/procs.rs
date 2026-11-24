@@ -25,6 +25,7 @@ pub struct WindowInfo {
 const DISCORD_EXES: &[&str] = &["discord.exe", "discordptb.exe", "discordcanary.exe"];
 
 /// Windowed apps that aren't useful audio sources.
+#[cfg(windows)]
 const IGNORED_EXES: &[&str] = &[
     "explorer.exe",
     "applicationframehost.exe",
