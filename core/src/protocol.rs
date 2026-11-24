@@ -46,7 +46,11 @@ pub enum ClientMsg {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Payload {
     /// Viewer -> streamer: "please send me your stream".
-    Watch,
+    /// `codecs` lists supported video codecs in preference order (e.g. ["av1", "h264"]).
+    Watch {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        codecs: Vec<String>,
+    },
     /// Streamer -> viewer.
     Offer { sdp: String },
     /// Viewer -> streamer.
@@ -78,8 +82,14 @@ mod tests {
 
     #[test]
     fn client_messages_serialize() {
-        let s = serde_json::to_string(&ClientMsg::Signal { to: "x".into(), payload: Payload::Watch }).unwrap();
-        assert_eq!(s, r#"{"type":"signal","to":"x","payload":{"kind":"watch"}}"#);
+        let s = serde_json::to_string(&ClientMsg::Signal {
+            to: "x".into(),
+            payload: Payload::Watch { codecs: vec!["av1".into(), "h264".into()] },
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"type":"signal","to":"x","payload":{"kind":"watch","codecs":["av1","h264"]}}"#);
+        let legacy: Payload = serde_json::from_str(r#"{"kind":"watch"}"#).unwrap();
+        assert_eq!(legacy, Payload::Watch { codecs: vec![] });
         let s = serde_json::to_string(&ClientMsg::Stream { streaming: true }).unwrap();
         assert_eq!(s, r#"{"type":"stream","streaming":true}"#);
     }

@@ -22,11 +22,14 @@ interface StreamStatus {
   active: boolean;
   encoder: string | null;
   viewers: number;
+  av1Viewers: number;
+  h264Viewers: number;
   relayed: number;
   bitrateKbps: number;
   rttMs: number | null;
   lossPct: number | null;
   discordStartedLate: boolean;
+  discordExcludedLive: boolean;
   error: string | null;
 }
 interface WatchStatus {
@@ -44,6 +47,7 @@ interface Settings {
   audioMode: "all-except" | "app" | "all" | "none"; audioExclude: string; audioApp: string;
   codec: "auto" | "av1" | "h264"; bitrateKbps: number | null;
   watchVolume: number; watchMuted: boolean;
+  shortcutMute: string; shortcutStop: string;
 }
 interface AppInfo { pid: number; exe: string; title: string }
 interface TurnUsageInfo { month: string; usedGb: number; capGb: number; turnCapped: boolean }
@@ -81,6 +85,7 @@ const ui = {
   streamRelay: $("stream-relay"),
   streamRelayText: $("stream-relay-text"),
   streamDiscordWarn: $("stream-discord-warn"),
+  streamDiscordOk: $("stream-discord-ok"),
   audioSummary: $("audio-summary"),
   changeAudio: $("change-audio"),
   audioExclude: $<HTMLSelectElement>("audio-exclude"),
@@ -113,6 +118,8 @@ const ui = {
   toggleKey: $("toggle-key"),
   pasteInvite: $("paste-invite"),
   copyInvite: $("copy-invite"),
+  shortcutMute: $<HTMLInputElement>("shortcut-mute"),
+  shortcutStop: $<HTMLInputElement>("shortcut-stop"),
   turnUsageBox: $("turn-usage-box"),
   turnUsageLabel: $("turn-usage-label"),
   turnUsageValue: $("turn-usage-value"),
@@ -133,6 +140,8 @@ let settings: Settings = {
   bitrateKbps: null,
   watchVolume: 1.0,
   watchMuted: false,
+  shortcutMute: "Ctrl+Shift+M",
+  shortcutStop: "Ctrl+Shift+S",
 };
 let sysInfo: SystemInfo | null = null;
 let pendingUpdate: Update | null = null;
@@ -206,11 +215,14 @@ function showRoom(view: RoomView | null) {
       active: false,
       encoder: null,
       viewers: 0,
+      av1Viewers: 0,
+      h264Viewers: 0,
       relayed: 0,
       bitrateKbps: 0,
       rttMs: null,
       lossPct: null,
       discordStartedLate: false,
+      discordExcludedLive: false,
       error: null,
     });
     ui.watching.hidden = true;
@@ -287,14 +299,16 @@ function renderStream(s: StreamStatus) {
   ui.streamLive.hidden = !s.active;
   ui.streamRelay.hidden = !(s.active && s.relayed > 0);
   ui.streamDiscordWarn.hidden = !(s.active && s.discordStartedLate);
+  ui.streamDiscordOk.hidden = !(s.active && s.discordExcludedLive);
   ui.toggleStream.textContent = s.active ? "Parar transmissão" : "Transmitir";
   ui.toggleStream.classList.toggle("primary", !s.active);
   ui.toggleStream.classList.toggle("danger", s.active);
   if (s.active) {
     const v = s.viewers === 1 ? "1 espectador" : `${s.viewers} espectadores`;
+    const codecs = s.av1Viewers > 0 && s.h264Viewers > 0 ? ` (${s.av1Viewers} AV1 + ${s.h264Viewers} H.264)` : "";
     const mbps = s.bitrateKbps > 0 ? ` · ${(s.bitrateKbps / 1000).toFixed(1).replace(".", ",")} Mbps` : "";
     const health = s.viewers > 0 ? formatHealth(s.rttMs, s.lossPct) : "";
-    ui.streamStats.textContent = `${v} · ${s.encoder ?? ""}${mbps}${health ? ` · ${health}` : ""}`;
+    ui.streamStats.textContent = `${v}${codecs} · ${s.encoder ?? ""}${mbps}${health ? ` · ${health}` : ""}`;
     ui.streamRelayText.textContent =
       s.relayed === 1 ? "1 espectador está recebendo pelo servidor (usa a cota do TURN)."
       : `${s.relayed} espectadores estão recebendo pelo servidor (usa a cota do TURN).`;
@@ -696,6 +710,8 @@ async function openSettings() {
   ui.settingsOk.hidden = true;
   ui.serverUrl.value = settings.serverUrl;
   ui.serverKey.value = settings.serverKey;
+  ui.shortcutMute.value = settings.shortcutMute;
+  ui.shortcutStop.value = settings.shortcutStop;
   ui.serverKey.type = "password";
   ui.toggleKey.textContent = "mostrar";
   const radio = document.querySelector<HTMLInputElement>(`input[name="audio-mode"][value="${settings.audioMode}"]`);
@@ -806,19 +822,33 @@ ui.settingsForm.addEventListener("submit", (e) => {
   }
   const codec = (document.querySelector<HTMLInputElement>('input[name="video-codec"]:checked')?.value ??
     settings.codec) as Settings["codec"];
+  e.preventDefault();
   ui.settingsError.hidden = true;
-  settings.serverUrl = url;
-  settings.serverKey = ui.serverKey.value.trim();
-  settings.audioMode = mode;
-  settings.codec = codec;
-  if (ui.audioExclude.value) settings.audioExclude = ui.audioExclude.value;
-  if (ui.audioApp.value) settings.audioApp = ui.audioApp.value;
-  renderServerSetup();
-  renderAudioSummary();
-  renderEncoderInfo();
-  renderQualityHint();
-  void persist();
-  toast("Configurações salvas.", true);
+  const next: Settings = {
+    ...settings,
+    serverUrl: url,
+    serverKey: ui.serverKey.value.trim(),
+    shortcutMute: ui.shortcutMute.value.trim(),
+    shortcutStop: ui.shortcutStop.value.trim(),
+    audioMode: mode,
+    codec,
+    audioExclude: ui.audioExclude.value || settings.audioExclude,
+    audioApp: ui.audioApp.value || settings.audioApp,
+  };
+  void invoke("save_settings", { settings: next })
+    .then(() => {
+      settings = next;
+      renderServerSetup();
+      renderAudioSummary();
+      renderEncoderInfo();
+      renderQualityHint();
+      ui.settingsDialog.close("save");
+      toast("Configurações salvas.", true);
+    })
+    .catch((err) => {
+      ui.settingsError.textContent = friendly(err);
+      ui.settingsError.hidden = false;
+    });
 });
 
 void listen<RoomView>("room-updated", (e) => {
@@ -841,6 +871,11 @@ void listen<{ reason: string }>("room-closed", (e) => {
 });
 void listen<StreamStatus>("stream-status", (e) => renderStream(e.payload));
 void listen<WatchStatus>("watch-status", (e) => renderWatch(e.payload));
+void listen<{ volume: number; muted: boolean }>("watch-volume-changed", (e) => {
+  settings.watchVolume = e.payload.volume;
+  settings.watchMuted = e.payload.muted;
+  renderWatchVolume();
+});
 
 async function init() {
   settings = await invoke<Settings>("get_settings");

@@ -39,6 +39,20 @@ pub enum ViewEnd {
     UserStopped,
 }
 
+/// Codecs this viewer can decode, ordered by preference.
+pub fn supported_codecs() -> Vec<String> {
+    let can_av1 = gst::ElementFactory::find("rtpav1depay").is_some()
+        && gst::ElementFactory::find("av1parse").is_some()
+        && ["d3d11av1dec", "d3d12av1dec", "nvav1dec", "dav1ddec", "vaav1dec"]
+            .iter()
+            .any(|f| gst::ElementFactory::find(f).is_some());
+    if can_av1 {
+        vec!["av1".into(), "h264".into()]
+    } else {
+        vec!["h264".into()]
+    }
+}
+
 fn is_target(p: &Peer, cfg: &ViewConfig) -> bool {
     p.streaming && cfg.target.as_ref().is_none_or(|t| t.eq_ignore_ascii_case(&p.name))
 }
@@ -183,7 +197,7 @@ impl Viewer {
     /// Starts the pipeline and asks the streamer for its stream.
     pub fn start(&self) -> Result<()> {
         self.pipeline.set_state(gst::State::Playing).context("could not start viewer pipeline")?;
-        self.sig.signal(&self.streamer.id, Payload::Watch);
+        self.sig.signal(&self.streamer.id, Payload::Watch { codecs: supported_codecs() });
         log::info!("watching {}", self.streamer.name);
         Ok(())
     }

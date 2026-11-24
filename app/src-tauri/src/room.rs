@@ -48,6 +48,31 @@ impl AppState {
             .as_ref()
             .is_some_and(|r| r.streamer.is_some() || r.viewer.is_some())
     }
+
+    pub fn toggle_watch_mute(&self, app: &AppHandle) {
+        let viewer = self
+            .room
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|r| Some(r.viewer.as_ref()?.obj.clone()));
+        let Some(viewer) = viewer else { return };
+        let mut s = settings::load(app);
+        s.watch_muted = !s.watch_muted;
+        viewer.set_volume(s.watch_volume, s.watch_muted);
+        let _ = settings::save_settings(app.clone(), s.clone());
+        let _ = app.emit(
+            "watch-volume-changed",
+            serde_json::json!({ "volume": s.watch_volume, "muted": s.watch_muted }),
+        );
+    }
+
+    pub fn stop_active_stream(&self, app: &AppHandle) {
+        let gen = self.room.lock().unwrap().as_ref().map(|r| r.generation);
+        if let Some(gen) = gen {
+            end_stream(app, &self.room, gen, None);
+        }
+    }
 }
 
 /// A running pipeline plus the task watching its bus.
@@ -70,6 +95,7 @@ struct Room {
     loop_task: Option<JoinHandle<()>>,
     discord_missing_at_stream_start: bool,
     discord_started_late: bool,
+    discord_excluded_live: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -87,12 +113,15 @@ pub struct StreamStatus {
     active: bool,
     encoder: Option<String>,
     viewers: usize,
+    av1_viewers: usize,
+    h264_viewers: usize,
     /// How many viewers go through the TURN relay.
     relayed: usize,
     bitrate_kbps: u32,
     rtt_ms: Option<f64>,
     loss_pct: Option<f64>,
     discord_started_late: bool,
+    discord_excluded_live: bool,
     error: Option<String>,
 }
 
@@ -324,11 +353,14 @@ pub fn start_stream(
         active: true,
         encoder: Some(streamer.encoder.label.to_string()),
         viewers: 0,
+        av1_viewers: 0,
+        h264_viewers: 0,
         relayed: 0,
         bitrate_kbps: target_kbps,
         rtt_ms: None,
         loss_pct: None,
         discord_started_late: false,
+        discord_excluded_live: false,
         error: None,
     };
 
@@ -369,6 +401,7 @@ pub fn start_stream(
         };
         room.discord_missing_at_stream_start = discord_missing;
         room.discord_started_late = false;
+        room.discord_excluded_live = false;
         room.streamer = Some(Active { obj: streamer, bus_task });
     }
 
@@ -518,6 +551,7 @@ async fn join(app: AppHandle, shared: Shared, server: Server, code: String, name
         loop_task: None,
         discord_missing_at_stream_start: false,
         discord_started_late: false,
+        discord_excluded_live: false,
     };
     let view = room.view();
     let previous = shared.lock().unwrap().replace(room);
@@ -670,42 +704,63 @@ async fn room_loop(app: AppHandle, shared: Shared, gen: u64, mut events: tokio::
                 };
                 ticks += 1;
                 if let Some(s) = streamer {
-                    let s_tick = s.clone();
-                    let discord_late = if check_discord && ticks.is_multiple_of(5) {
-                        let found = tauri::async_runtime::spawn_blocking(|| {
-                            screenlive_core::procs::discord_root_pid().is_some()
+                    if check_discord && ticks.is_multiple_of(5) {
+                        let s_swap = s.clone();
+                        let outcome = tauri::async_runtime::spawn_blocking(move || {
+                            let Some(pid) = screenlive_core::procs::discord_root_pid() else {
+                                return Ok(false);
+                            };
+                            s_swap.set_audio_source(screenlive_core::capture::AudioSource::SystemExcept(pid))?;
+                            Ok::<bool, anyhow::Error>(true)
                         })
-                        .await
-                        .unwrap_or(false);
-                        if found {
-                            let mut guard = shared.lock().unwrap();
-                            if let Some(room) = guard.as_mut().filter(|r| r.generation == gen) {
-                                room.discord_started_late = true;
+                        .await;
+                        let mut guard = shared.lock().unwrap();
+                        if let Some(room) = guard.as_mut().filter(|r| r.generation == gen) {
+                            match outcome {
+                                Ok(Ok(true)) => {
+                                    room.discord_missing_at_stream_start = false;
+                                    room.discord_excluded_live = true;
+                                }
+                                Ok(Err(e)) => {
+                                    log::warn!("live Discord audio exclusion failed: {e:#}");
+                                    room.discord_missing_at_stream_start = false;
+                                    room.discord_started_late = true;
+                                }
+                                _ => {}
                             }
                         }
-                        found
-                    } else {
-                        shared
-                            .lock()
-                            .unwrap()
-                            .as_ref()
-                            .is_some_and(|r| r.generation == gen && r.discord_started_late)
-                    };
+                    }
+                    let (discord_started_late, discord_excluded_live) = shared
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .filter(|r| r.generation == gen)
+                        .map(|r| (r.discord_started_late, r.discord_excluded_live))
+                        .unwrap_or((false, false));
+
+                    let s_tick = s.clone();
                     if let Ok(viewers) = tauri::async_runtime::spawn_blocking(move || s_tick.tick()).await {
                         if ticks.is_multiple_of(15) {
                             s.report_relay_usage();
                         }
                         let rtt_ms = viewers.iter().filter_map(|v| v.rtt_ms).reduce(f64::max);
                         let loss_pct = viewers.iter().filter_map(|v| v.loss_pct).reduce(f64::max);
+                        let av1_viewers =
+                            viewers.iter().filter(|v| v.codec == encoder::VideoCodec::Av1).count();
+                        let h264_viewers =
+                            viewers.iter().filter(|v| v.codec == encoder::VideoCodec::H264).count();
                         let _ = app.emit("stream-status", StreamStatus {
                             active: true,
                             encoder: Some(s.encoder.label.to_string()),
                             viewers: viewers.len(),
+                            av1_viewers,
+                            h264_viewers,
                             relayed: viewers.iter().filter(|v| v.relayed == Some(true)).count(),
                             bitrate_kbps: s.current_bitrate_kbps(),
                             rtt_ms,
                             loss_pct,
-                            discord_started_late: discord_late,
+                            discord_started_late,
+                            discord_excluded_live,
                             error: None,
                         });
                     }
@@ -797,6 +852,7 @@ fn end_stream(app: &AppHandle, shared: &Shared, gen: u64, error: Option<String>)
         guard.as_mut().filter(|r| r.generation == gen).and_then(|r| {
             r.discord_missing_at_stream_start = false;
             r.discord_started_late = false;
+            r.discord_excluded_live = false;
             r.streamer.take()
         })
     };

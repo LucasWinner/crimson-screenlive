@@ -85,12 +85,16 @@ fn peer_video_desc(codec: VideoCodec) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tier {
     High,
+    CompatH264,
     Low,
 }
 
 struct VideoTier {
+    spec: EncoderSpec,
     encoder: gst::Element,
     tee: gst::Element,
+    raw_pad: gst::Pad,
+    chain: Vec<gst::Element>,
 }
 
 /// A per-viewer branch hanging off a tee.
@@ -104,6 +108,7 @@ struct PeerConn {
     video: Branch,
     audio: Option<Branch>,
     tier: Tier,
+    codec: VideoCodec,
     relayed: Option<bool>,
     last_bytes: u64,
 }
@@ -112,8 +117,10 @@ struct Inner {
     pipeline: gst::Pipeline,
     raw_tee: gst::Element,
     high: VideoTier,
+    compat_h264: Mutex<Option<VideoTier>>,
     low: Mutex<Option<VideoTier>>,
     atee: Option<gst::Element>,
+    audio_bin: Mutex<Option<gst::Bin>>,
     peers: Mutex<HashMap<String, PeerConn>>,
     sig: Mutex<SignalingHandle>,
     ice: Mutex<Vec<IceServer>>,
@@ -151,6 +158,7 @@ pub struct ViewerInfo {
     /// None while still connecting.
     pub relayed: Option<bool>,
     pub reduced_quality: bool,
+    pub codec: VideoCodec,
     pub rtt_ms: Option<f64>,
     pub loss_pct: Option<f64>,
 }
@@ -192,7 +200,27 @@ fn build_tier(
     }
     let src = raw_tee.request_pad_simple("src_%u").context("raw tee pad")?;
     src.link(&chain[0].static_pad("sink").unwrap())?;
-    Ok(VideoTier { encoder: enc, tee })
+    Ok(VideoTier { spec: *spec, encoder: enc, tee, raw_pad: src, chain })
+}
+
+fn teardown_tier(pipeline: &gst::Pipeline, tier: VideoTier) {
+    let raw_pad = tier.raw_pad;
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    raw_pad.add_probe(gst::PadProbeType::IDLE, move |pad, _| {
+        if let Some(peer) = pad.peer() {
+            let _ = pad.unlink(&peer);
+        }
+        let _ = tx.send(());
+        gst::PadProbeReturn::Remove
+    });
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(1));
+    if let Some(tee) = raw_pad.parent_element() {
+        tee.release_request_pad(&raw_pad);
+    }
+    for e in tier.chain.into_iter().rev() {
+        let _ = e.set_state(gst::State::Null);
+        let _ = pipeline.remove(&e);
+    }
 }
 
 impl Streamer {
@@ -214,7 +242,7 @@ impl Streamer {
             &EncoderSettings { bitrate_kbps: cfg.bitrate_kbps, fps: cfg.format.fps, keyframe_secs: 2 },
         )?;
 
-        let atee = match capture::audio_fragment(cfg.audio) {
+        let (atee, audio_bin) = match capture::audio_fragment(cfg.audio) {
             Some(frag) => {
                 let abin = gst::parse::bin_from_description(&format!("{frag} ! {AUDIO_RTP}"), true)
                     .context("building audio source")?;
@@ -222,9 +250,9 @@ impl Streamer {
                 atee.set_property("allow-not-linked", true);
                 pipeline.add_many([abin.upcast_ref(), &atee])?;
                 abin.link(&atee)?;
-                Some(atee)
+                (Some(atee), Some(abin))
             }
-            None => None,
+            None => (None, None),
         };
 
         // Relayed viewers only save bandwidth if the main stream is above 720p.
@@ -234,8 +262,10 @@ impl Streamer {
                 pipeline,
                 raw_tee,
                 high,
-                low: Mutex::new(None),
+                compat_h264: Mutex::default(),
+                low: Mutex::default(),
                 atee,
+                audio_bin: Mutex::new(audio_bin),
                 peers: Mutex::default(),
                 sig: Mutex::new(sig),
                 ice: Mutex::new(ice),
@@ -256,6 +286,62 @@ impl Streamer {
 
     pub fn current_bitrate_kbps(&self) -> u32 {
         self.inner.current_bitrate_kbps.load(Ordering::Relaxed)
+    }
+
+    /// Hot-swaps the audio capture source (for example to exclude Discord once
+    /// it starts) without interrupting video or disconnecting viewers.
+    pub fn set_audio_source(&self, src: AudioSource) -> Result<()> {
+        let Some(atee) = &self.inner.atee else { return Ok(()) };
+        let Some(frag) = capture::audio_fragment(src) else { return Ok(()) };
+        let new_bin = gst::parse::bin_from_description(&format!("{frag} ! {AUDIO_RTP}"), true)
+            .context("building replacement audio source")?;
+        let mut guard = self.inner.audio_bin.lock().unwrap();
+        let Some(old_bin) = guard.take() else { return Ok(()) };
+
+        self.inner.pipeline.add(&new_bin)?;
+        let old_src = old_bin.static_pad("src").context("old audio src pad")?;
+        let new_src = new_bin.static_pad("src").context("new audio src pad")?;
+        let atee_sink = atee.static_pad("sink").context("atee sink pad")?;
+
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let old_src_c = old_src.clone();
+        old_src.add_probe(gst::PadProbeType::IDLE, move |_, _| {
+            let _ = old_src_c.unlink(&atee_sink);
+            let res = new_src.link(&atee_sink).map(|_| ()).map_err(|e| format!("{e:?}"));
+            let _ = tx.send(res);
+            gst::PadProbeReturn::Remove
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let _ = self.inner.pipeline.remove(&new_bin);
+                *guard = Some(old_bin);
+                anyhow::bail!("relinking audio source failed: {e}");
+            }
+            Err(_) => {
+                // Pipeline may not be Playing; unlink/relink directly.
+                let atee_sink = atee.static_pad("sink").unwrap();
+                let _ = old_src.unlink(&atee_sink);
+                if let Err(e) = new_bin.static_pad("src").unwrap().link(&atee_sink) {
+                    let _ = self.inner.pipeline.remove(&new_bin);
+                    *guard = Some(old_bin);
+                    return Err(e.into());
+                }
+            }
+        }
+        if let Err(e) = new_bin.sync_state_with_parent() {
+            log::warn!("new audio source state sync failed: {e}");
+        }
+        *guard = Some(new_bin);
+        drop(guard);
+
+        let pipeline = self.inner.pipeline.clone();
+        std::thread::spawn(move || {
+            let _ = old_bin.set_state(gst::State::Null);
+            let _ = pipeline.remove(&old_bin);
+        });
+        log::info!("audio source swapped seamlessly");
+        Ok(())
     }
 
     pub fn pipeline(&self) -> &gst::Pipeline {
@@ -315,7 +401,7 @@ impl Streamer {
     fn handle_payload(&self, from: &str, payload: Payload) {
         let webrtc = || self.inner.peers.lock().unwrap().get(from).map(|p| p.webrtc.clone());
         let res = match payload {
-            Payload::Watch => add_peer(&self.inner, from),
+            Payload::Watch { codecs } => add_peer(&self.inner, from, &codecs),
             Payload::Answer { sdp } => match webrtc() {
                 Some(w) => webrtc::accept_answer(&w, &sdp),
                 None => Ok(()),
@@ -381,6 +467,7 @@ impl Streamer {
                     id,
                     relayed: p.relayed,
                     reduced_quality: p.tier == Tier::Low,
+                    codec: p.codec,
                     rtt_ms: link.rtt_ms,
                     loss_pct: link.loss_pct,
                 });
@@ -392,13 +479,19 @@ impl Streamer {
                 let cur = self.inner.current_bitrate_kbps.load(Ordering::Relaxed);
                 let target = self.inner.target_bitrate_kbps;
                 let floor = (target / 2).max(1500).min(target);
+                let update_encoders = |kbps: u32| {
+                    encoder::set_bitrate(&self.inner.high.encoder, &self.inner.spec, kbps);
+                    if let Some(compat) = self.inner.compat_h264.lock().unwrap().as_ref() {
+                        encoder::set_bitrate(&compat.encoder, &compat.spec, kbps);
+                    }
+                };
                 if loss > 5.0 {
                     self.inner.low_loss_streak.store(0, Ordering::Relaxed);
                     let next = ((cur as f64 * 0.85).round() as u32).max(floor);
                     if next < cur {
                         log::info!("packet loss {loss:.1}%: stepping bitrate {cur} -> {next} kbps");
                         self.inner.current_bitrate_kbps.store(next, Ordering::Relaxed);
-                        encoder::set_bitrate(&self.inner.high.encoder, &self.inner.spec, next);
+                        update_encoders(next);
                     }
                 } else if loss < 1.0 && cur < target {
                     let streak = self.inner.low_loss_streak.fetch_add(1, Ordering::Relaxed) + 1;
@@ -408,7 +501,7 @@ impl Streamer {
                         if next > cur {
                             log::info!("network healthy: recovering bitrate {cur} -> {next} kbps");
                             self.inner.current_bitrate_kbps.store(next, Ordering::Relaxed);
-                            encoder::set_bitrate(&self.inner.high.encoder, &self.inner.spec, next);
+                            update_encoders(next);
                         }
                     }
                 } else {
@@ -469,32 +562,54 @@ impl Streamer {
     }
 }
 
-fn tier_tee(inner: &Inner, tier: Tier) -> Result<(gst::Element, gst::Element)> {
-    if tier == Tier::High {
-        return Ok((inner.high.tee.clone(), inner.high.encoder.clone()));
+fn tier_tee(inner: &Inner, tier: Tier) -> Result<(gst::Element, gst::Element, VideoCodec)> {
+    match tier {
+        Tier::High => Ok((inner.high.tee.clone(), inner.high.encoder.clone(), inner.high.spec.codec)),
+        Tier::CompatH264 => {
+            let mut compat = inner.compat_h264.lock().unwrap();
+            if compat.is_none() {
+                let spec = encoder::pick_h264_for_memory(inner.high.spec.memory)?;
+                let kbps = inner.current_bitrate_kbps.load(Ordering::Relaxed);
+                log::info!("starting parallel {} tier for H.264-only viewers ({kbps} kbps)", spec.label);
+                *compat = Some(build_tier(
+                    &inner.pipeline,
+                    &inner.raw_tee,
+                    &spec,
+                    None,
+                    &EncoderSettings { bitrate_kbps: kbps, fps: inner.fps, keyframe_secs: 2 },
+                )?);
+            }
+            let t = compat.as_ref().unwrap();
+            Ok((t.tee.clone(), t.encoder.clone(), t.spec.codec))
+        }
+        Tier::Low => {
+            let mut low = inner.low.lock().unwrap();
+            if low.is_none() {
+                let (w, h) = RELAY_FORMAT;
+                log::info!("starting {w}x{h} tier for relayed viewers");
+                *low = Some(build_tier(
+                    &inner.pipeline,
+                    &inner.raw_tee,
+                    &inner.spec,
+                    Some(capture::downscale_fragment(&inner.source, &inner.spec, w, h)),
+                    &EncoderSettings { bitrate_kbps: RELAY_KBPS, fps: inner.fps, keyframe_secs: 2 },
+                )?);
+            }
+            let t = low.as_ref().unwrap();
+            Ok((t.tee.clone(), t.encoder.clone(), t.spec.codec))
+        }
     }
-    let mut low = inner.low.lock().unwrap();
-    if low.is_none() {
-        let (w, h) = RELAY_FORMAT;
-        log::info!("starting {w}x{h} tier for relayed viewers");
-        *low = Some(build_tier(
-            &inner.pipeline,
-            &inner.raw_tee,
-            &inner.spec,
-            Some(capture::downscale_fragment(&inner.source, &inner.spec, w, h)),
-            &EncoderSettings { bitrate_kbps: RELAY_KBPS, fps: inner.fps, keyframe_secs: 2 },
-        )?);
-    }
-    let t = low.as_ref().unwrap();
-    Ok((t.tee.clone(), t.encoder.clone()))
 }
 
 /// Moves a viewer's video branch to another tier's tee without a gap in its RTP stream.
 fn switch_tier(inner: &Inner, id: &str, to: Tier) -> Result<()> {
-    let (tee, enc) = tier_tee(inner, to)?;
+    let (tee, enc, _) = tier_tee(inner, to)?;
     let (old_pad, sink) = {
         let peers = inner.peers.lock().unwrap();
         let p = peers.get(id).context("viewer left")?;
+        if p.tier == Tier::CompatH264 {
+            return Ok(());
+        }
         (p.video.tee_pad.clone(), p.video.elem.static_pad("sink").unwrap())
     };
     let new_pad = tee.request_pad_simple("src_%u").context("tee pad")?;
@@ -524,7 +639,7 @@ fn switch_tier(inner: &Inner, id: &str, to: Tier) -> Result<()> {
     Ok(())
 }
 
-fn add_peer(inner: &Arc<Inner>, id: &str) -> Result<()> {
+fn add_peer(inner: &Arc<Inner>, id: &str, codecs: &[String]) -> Result<()> {
     if inner.peers.lock().unwrap().contains_key(id) {
         remove_peer(inner, id); // viewer reconnecting: start fresh
     }
@@ -533,6 +648,14 @@ fn add_peer(inner: &Arc<Inner>, id: &str) -> Result<()> {
         inner.signal(id, Payload::Bye);
         return Ok(());
     }
+
+    let wants_av1 = codecs.iter().any(|c| c.eq_ignore_ascii_case("av1"));
+    let target_tier = if inner.high.spec.codec == VideoCodec::Av1 && !wants_av1 {
+        Tier::CompatH264
+    } else {
+        Tier::High
+    };
+    let (video_tee, tier_enc, codec) = tier_tee(inner, target_tier)?;
 
     let sig = inner.sig.lock().unwrap().clone();
     let ice = inner.ice.lock().unwrap().clone();
@@ -587,8 +710,8 @@ fn add_peer(inner: &Arc<Inner>, id: &str) -> Result<()> {
     };
     let setup = (|| -> Result<(Branch, Option<Branch>)> {
         let video = attach(
-            &inner.high.tee,
-            gst::parse::bin_from_description(peer_video_desc(inner.spec.codec), true)?.upcast(),
+            &video_tee,
+            gst::parse::bin_from_description(peer_video_desc(codec), true)?.upcast(),
         )?;
         let audio = match &inner.atee {
             Some(atee) => match attach(atee, gst::parse::launch(PEER_QUEUE)?) {
@@ -618,15 +741,24 @@ fn add_peer(inner: &Arc<Inner>, id: &str) -> Result<()> {
 
     inner.peers.lock().unwrap().insert(
         id.to_owned(),
-        PeerConn { webrtc, video, audio, tier: Tier::High, relayed: None, last_bytes: 0 },
+        PeerConn { webrtc, video, audio, tier: target_tier, codec, relayed: None, last_bytes: 0 },
     );
-    encoder::request_keyframe(&inner.high.encoder);
-    log::info!("viewer {id} connecting ({} total)", inner.peers.lock().unwrap().len());
+    encoder::request_keyframe(&tier_enc);
+    log::info!(
+        "viewer {id} connecting ({codec:?}, {} total)",
+        inner.peers.lock().unwrap().len()
+    );
     Ok(())
 }
 
 fn remove_peer(inner: &Inner, id: &str) {
-    let Some(peer) = inner.peers.lock().unwrap().remove(id) else { return };
+    let (peer, drop_compat) = {
+        let mut peers = inner.peers.lock().unwrap();
+        let Some(peer) = peers.remove(id) else { return };
+        let still_compat = peers.values().any(|p| p.tier == Tier::CompatH264);
+        let drop_compat = if !still_compat { inner.compat_h264.lock().unwrap().take() } else { None };
+        (peer, drop_compat)
+    };
     log::info!("viewer {id} left");
     let branches: Vec<Branch> = std::iter::once(peer.video).chain(peer.audio).collect();
 
@@ -662,6 +794,10 @@ fn remove_peer(inner: &Inner, id: &str) {
         }
         let _ = webrtc.set_state(gst::State::Null);
         let _ = pipeline.remove(&webrtc);
+        if let Some(compat) = drop_compat {
+            teardown_tier(&pipeline, compat);
+            log::info!("stopped parallel H.264 tier (no H.264-only viewers left)");
+        }
     });
 }
 
@@ -678,5 +814,62 @@ mod tests {
         gst::parse::bin_from_description(PEER_VIDEO_AV1, true).unwrap();
         gst::parse::bin_from_description(&format!("opusenc ! {AUDIO_RTP}"), true).unwrap();
         gst::parse::launch(PEER_QUEUE).unwrap();
+    }
+
+    #[test]
+    fn audio_hot_swap_works() {
+        gst::init().unwrap();
+        let sig = SignalingHandle::dummy();
+        let cfg = StreamConfig {
+            video: VideoSource::Test,
+            audio: AudioSource::Test,
+            format: VideoFormat { width: 320, height: 240, fps: 30 },
+            bitrate_kbps: 1500,
+            auto_bitrate: true,
+            codec: Codec::H264,
+            encoder: None,
+            relay_saver: false,
+        };
+        let s = Streamer::new(&cfg, sig, Vec::new()).unwrap();
+        s.start().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        s.set_audio_source(AudioSource::Test).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        s.stop();
+    }
+
+    #[test]
+    fn dual_codec_compat_tier_works() {
+        gst::init().unwrap();
+        if encoder::pick_for_codec(None, Codec::Av1).is_err() {
+            return;
+        }
+        let sig = SignalingHandle::dummy();
+        let cfg = StreamConfig {
+            video: VideoSource::Test,
+            audio: AudioSource::Test,
+            format: VideoFormat { width: 640, height: 360, fps: 30 },
+            bitrate_kbps: 3000,
+            auto_bitrate: true,
+            codec: Codec::Av1,
+            encoder: None,
+            relay_saver: false,
+        };
+        let s = Streamer::new(&cfg, sig, Vec::new()).unwrap();
+        s.start().unwrap();
+        s.handle(ServerMsg::Signal {
+            from: "v_av1".into(),
+            payload: Payload::Watch { codecs: vec!["av1".into(), "h264".into()] },
+        });
+        s.handle(ServerMsg::Signal {
+            from: "v_h264".into(),
+            payload: Payload::Watch { codecs: vec!["h264".into()] },
+        });
+        let info = s.tick();
+        assert_eq!(info.len(), 2);
+        assert!(info.iter().any(|v| v.id == "v_av1" && v.codec == VideoCodec::Av1));
+        assert!(info.iter().any(|v| v.id == "v_h264" && v.codec == VideoCodec::H264));
+        assert!(s.inner.compat_h264.lock().unwrap().is_some());
+        s.stop();
     }
 }

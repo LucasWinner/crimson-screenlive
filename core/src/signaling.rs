@@ -39,6 +39,12 @@ impl SignalingHandle {
     pub fn signal(&self, to: &str, payload: Payload) {
         self.send(ClientMsg::Signal { to: to.to_owned(), payload });
     }
+
+    #[cfg(test)]
+    pub(crate) fn dummy() -> Self {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        Self { tx }
+    }
 }
 
 /// Room codes: 6 chars, no look-alikes (0/O, 1/I). Accepts "kx7-p2q" style input.

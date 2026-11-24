@@ -108,6 +108,18 @@ pub fn pick_for_codec(preferred: Option<&str>, codec: Codec) -> Result<EncoderSp
     }
 }
 
+/// Picks an H.264 encoder compatible with `memory` (used when spinning up a
+/// parallel H.264 tier alongside a primary AV1 stream on the same `raw_tee`).
+pub fn pick_h264_for_memory(memory: Memory) -> Result<EncoderSpec> {
+    let avail = available();
+    avail
+        .iter()
+        .copied()
+        .find(|c| c.codec == VideoCodec::H264 && c.memory == memory)
+        .or_else(|| avail.into_iter().find(|c| c.codec == VideoCodec::H264))
+        .ok_or_else(|| anyhow::anyhow!("no compatible H.264 fallback encoder found"))
+}
+
 /// Sets a property from its string form, skipping it if this encoder version
 /// doesn't have it or rejects the value (property names differ across versions).
 pub(crate) fn set_if(elem: &gst::Element, name: &str, value: &str) {

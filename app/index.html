@@ -154,6 +154,9 @@
           <div id="stream-discord-warn" class="relay-note" hidden>
             <span>Discord foi aberto depois da transmissão — pare e inicie novamente para excluir as vozes da call.</span>
           </div>
+          <div id="stream-discord-ok" class="ok-note" hidden>
+            <span>Discord detectado — áudio da call excluído automaticamente!</span>
+          </div>
           <button id="toggle-stream" class="btn primary block">Transmitir</button>
           <p id="encoder-info" class="muted small center"></p>
         </div>
@@ -200,6 +203,21 @@
             <span>H.264 (máxima compatibilidade)</span>
           </label>
           <p id="codec-help" class="muted small"></p>
+        </fieldset>
+
+        <fieldset class="audio-settings">
+          <legend>Atalhos globais (funcionam dentro do jogo)</legend>
+          <div class="row">
+            <label class="field grow">
+              <span>Silenciar espectador</span>
+              <input id="shortcut-mute" placeholder="Ctrl+Shift+M" spellcheck="false" />
+            </label>
+            <label class="field grow">
+              <span>Parar transmissão</span>
+              <input id="shortcut-stop" placeholder="Ctrl+Shift+S" spellcheck="false" />
+            </label>
+          </div>
+          <p class="muted small">Deixe vazio para desativar. Ex.: Ctrl+Shift+M, Alt+F9.</p>
         </fieldset>
 
         <label class="field">

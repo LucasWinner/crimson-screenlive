@@ -4,10 +4,57 @@
 mod room;
 mod settings;
 
+use std::sync::Mutex;
+
 use room::AppState;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+#[derive(Default)]
+struct ShortcutIds {
+    mute: Option<u32>,
+    stop: Option<u32>,
+}
+
+pub fn apply_shortcuts(app: &tauri::AppHandle, s: &settings::Settings) -> Result<(), String> {
+    let parse = |raw: &str, label: &str| -> Result<Option<Shortcut>, String> {
+        let t = raw.trim();
+        if t.is_empty() {
+            return Ok(None);
+        }
+        t.parse::<Shortcut>()
+            .map(Some)
+            .map_err(|e| format!("atalho inválido para {label} ('{t}'): {e}"))
+    };
+    let mute = parse(&s.shortcut_mute, "silenciar")?;
+    let stop = parse(&s.shortcut_stop, "parar transmissão")?;
+    if let (Some(a), Some(b)) = (&mute, &stop) {
+        if a.id() == b.id() {
+            return Err("os dois atalhos não podem ser iguais".into());
+        }
+    }
+
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+    let state = app.state::<Mutex<ShortcutIds>>();
+    let mut ids = state.lock().unwrap();
+    ids.mute = None;
+    ids.stop = None;
+
+    if let Some(sc) = mute {
+        let id = sc.id();
+        gs.register(sc).map_err(|e| format!("não foi possível registrar atalho de mudo: {e}"))?;
+        ids.mute = Some(id);
+    }
+    if let Some(sc) = stop {
+        let id = sc.id();
+        gs.register(sc).map_err(|e| format!("não foi possível registrar atalho de parar transmissão: {e}"))?;
+        ids.stop = Some(id);
+    }
+    Ok(())
+}
 
 /// Installed builds ship GStreamer next to the exe (DLLs) with plugins in
 /// `gstreamer/plugins`. Point GStreamer there so it ignores any system install.
@@ -49,10 +96,33 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let state = app.state::<Mutex<ShortcutIds>>();
+                    let ids = state.lock().unwrap();
+                    let (mute_id, stop_id) = (ids.mute, ids.stop);
+                    drop(ids);
+                    if Some(shortcut.id()) == mute_id {
+                        app.state::<AppState>().toggle_watch_mute(app);
+                    } else if Some(shortcut.id()) == stop_id {
+                        app.state::<AppState>().stop_active_stream(app);
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
+        .manage(Mutex::new(ShortcutIds::default()))
         .setup(|app| {
+            let saved = settings::load(app.handle());
+            if let Err(e) = apply_shortcuts(app.handle(), &saved) {
+                log::warn!("could not register global shortcuts: {e}");
+            }
             let menu = MenuBuilder::new(app)
                 .text("open", "Abrir Crimson ScreenLive")
                 .separator()

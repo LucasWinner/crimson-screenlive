@@ -32,6 +32,10 @@ pub struct Settings {
     /// Preferred viewer playback volume (0.0..=2.0, default 1.0).
     pub watch_volume: f64,
     pub watch_muted: bool,
+    /// Global shortcut to toggle viewer mute (empty = disabled).
+    pub shortcut_mute: String,
+    /// Global shortcut to stop active stream (empty = disabled).
+    pub shortcut_stop: String,
 }
 
 impl Default for Settings {
@@ -50,6 +54,8 @@ impl Default for Settings {
             bitrate_kbps: None,
             watch_volume: 1.0,
             watch_muted: false,
+            shortcut_mute: "Ctrl+Shift+M".into(),
+            shortcut_stop: "Ctrl+Shift+S".into(),
         }
     }
 }
@@ -117,6 +123,9 @@ pub fn save_settings(app: AppHandle, mut settings: Settings) -> Result<(), Strin
     } else {
         1.0
     };
+    settings.shortcut_mute = settings.shortcut_mute.trim().to_string();
+    settings.shortcut_stop = settings.shortcut_stop.trim().to_string();
+    crate::apply_shortcuts(&app, &settings)?;
     let p = path(&app).ok_or("no config directory")?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
