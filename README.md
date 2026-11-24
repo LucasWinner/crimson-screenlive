@@ -164,7 +164,7 @@ Dependências de sistema:
 ```bash
 sudo apt-get install -y \
   libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev \
-  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-libav gstreamer1.0-pipewire libx264-dev libssl-dev pkg-config
 ```
