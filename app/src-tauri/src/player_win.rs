@@ -2,6 +2,7 @@
 //! D3D11/D3D12 VideoOverlay renders hardware video above WebView2 in the top
 //! area while keeping the bottom 48px HTML control bar interactive.
 
+#[cfg(windows)]
 pub const BAR_HEIGHT_LOGICAL: f64 = 48.0;
 
 #[cfg(windows)]
