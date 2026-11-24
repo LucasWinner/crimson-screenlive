@@ -1,11 +1,13 @@
 // Hide the console window in release builds on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod player_win;
 mod room;
 mod settings;
 
 use std::sync::Mutex;
 
+use player_win::PlayerSurface;
 use room::AppState;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -118,7 +120,12 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
         .manage(Mutex::new(ShortcutIds::default()))
+        .manage(Mutex::new(None::<PlayerSurface>))
         .setup(|app| {
+            if let Some(player_win) = app.get_webview_window("player") {
+                let surf = PlayerSurface::create(&player_win);
+                *app.state::<Mutex<Option<PlayerSurface>>>().lock().unwrap() = surf;
+            }
             let saved = settings::load(app.handle());
             if let Err(e) = apply_shortcuts(app.handle(), &saved) {
                 log::warn!("could not register global shortcuts: {e}");
@@ -157,13 +164,36 @@ fn main() {
             tray.build(app)?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "main" && window.app_handle().state::<AppState>().is_media_active() {
                     api.prevent_close();
                     let _ = window.hide();
+                } else if window.label() == "player" {
+                    api.prevent_close();
+                    let _ = window.set_fullscreen(false);
+                    let _ = window.hide();
+                    window.app_handle().state::<AppState>().stop_active_watch(window.app_handle());
                 }
             }
+            tauri::WindowEvent::Resized(size) if window.label() == "player" => {
+                let scale = window.scale_factor().unwrap_or(1.0);
+                let surf_state = window.app_handle().state::<Mutex<Option<PlayerSurface>>>();
+                let guard = surf_state.lock().unwrap();
+                if let Some(surf) = guard.as_ref() {
+                    surf.resize(size.width, size.height, scale);
+                }
+            }
+            tauri::WindowEvent::ScaleFactorChanged { scale_factor, .. } if window.label() == "player" => {
+                if let Ok(size) = window.inner_size() {
+                    let surf_state = window.app_handle().state::<Mutex<Option<PlayerSurface>>>();
+                    let guard = surf_state.lock().unwrap();
+                    if let Some(surf) = guard.as_ref() {
+                        surf.resize(size.width, size.height, *scale_factor);
+                    }
+                }
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             settings::get_settings,
@@ -178,6 +208,8 @@ fn main() {
             room::stop_stream,
             room::watch,
             room::stop_watch,
+            room::get_watch_state,
+            room::get_watch_volume,
             room::toggle_fullscreen,
             room::set_watch_volume,
         ])

@@ -134,6 +134,7 @@ struct Inner {
     current_bitrate_kbps: AtomicU32,
     auto_bitrate: bool,
     low_loss_streak: AtomicU32,
+    _capture_guard: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl Inner {
@@ -228,8 +229,8 @@ impl Streamer {
         let spec = encoder::pick_for_codec(cfg.encoder.as_deref(), cfg.codec)?;
         let pipeline = gst::Pipeline::with_name("streamer");
 
-        let vsrc = gst::parse::bin_from_description(&capture::video_fragment(&cfg.video, &spec, &cfg.format)?, true)
-            .context("building video source")?;
+        let prepared = capture::prepare_video(&cfg.video, &spec, &cfg.format)?;
+        let vsrc = gst::parse::bin_from_description(&prepared.fragment, true).context("building video source")?;
         let raw_tee = make("tee")?;
         raw_tee.set_property("allow-not-linked", true);
         pipeline.add_many([vsrc.upcast_ref(), &raw_tee])?;
@@ -279,6 +280,7 @@ impl Streamer {
                 current_bitrate_kbps: AtomicU32::new(cfg.bitrate_kbps),
                 auto_bitrate: cfg.auto_bitrate,
                 low_loss_streak: AtomicU32::new(0),
+                _capture_guard: prepared.guard,
             }),
             encoder: spec,
         })

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Crimson ScreenLive — Player</title>
+    <style>
+      :root {
+        --bg: #0c0a0e;
+        --surface: #18151d;
+        --border: #332e39;
+        --text: #f2eef5;
+        --muted: #a39cab;
+        --crimson: #d7263d;
+        --crimson-hover: #e8384f;
+        color-scheme: dark;
+        font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, "Noto Sans", Ubuntu, sans-serif;
+        font-size: 13px;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden; user-select: none; }
+      .bar {
+        position: fixed; left: 0; right: 0; bottom: 0; height: 48px;
+        display: flex; align-items: center; gap: 10px; padding: 0 12px;
+        background: var(--surface); border-top: 1px solid var(--border);
+      }
+      .live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--crimson); flex: none; animation: pulse 1.4s infinite; }
+      @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(215, 38, 61, 0.6); } 50% { box-shadow: 0 0 0 6px rgba(215, 38, 61, 0); } }
+      .meta { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .muted { color: var(--muted); }
+      .badge.relay { background: #f5a524; color: #1c1300; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 5px; flex: none; }
+      .vol { display: flex; align-items: center; gap: 8px; flex: none; }
+      .vol input[type="range"] { width: 100px; accent-color: var(--crimson); cursor: pointer; }
+      #volume-label { width: 38px; text-align: right; color: var(--muted); }
+      .btn {
+        font: inherit; font-weight: 600; color: var(--text); background: #26222b;
+        border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; cursor: pointer;
+      }
+      .btn:hover { border-color: #4a4351; }
+      .btn.danger { background: transparent; border-color: var(--crimson); color: var(--crimson-hover); }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <footer class="bar">
+      <div class="live-dot"></div>
+      <div class="meta">
+        <span>Assistindo <b id="watch-name"></b></span>
+        <span id="watch-stats" class="muted">Conectando…</span>
+        <span id="watch-relay" class="badge relay" hidden>VIA SERVIDOR</span>
+      </div>
+      <div class="vol">
+        <button id="mute-btn" class="btn" type="button">Mudo</button>
+        <input id="volume-slider" type="range" min="0" max="150" step="5" value="100" aria-label="Volume" />
+        <span id="volume-label">100%</span>
+      </div>
+      <button id="fullscreen-btn" class="btn" type="button" title="F11 ou Alt+Enter">Tela cheia</button>
+      <button id="stop-btn" class="btn danger" type="button">Parar</button>
+    </footer>
+    <script type="module" src="/src/player.ts"></script>
+  </body>
+</html>

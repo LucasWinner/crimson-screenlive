@@ -1,16 +1,17 @@
 # Arquitetura — Crimson ScreenLive
 
-Este documento descreve a arquitetura interna, os fluxos de mídia e sinalização e as convenções de manutenção do projeto.
+Este documento descreve a arquitetura interna, os fluxos de mídia e sinalização, a janela de player integrada e as convenções de segurança do projeto.
 
 ## Visão geral dos componentes
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         App Desktop (Tauri 2)                           │
-│  app/src/main.ts  ◄──IPC/Events──►  app/src-tauri/src/                  │
-│   (UI TypeScript)                     ├── main.rs (tray, updater, init) │
-│                                       ├── room.rs (sessão, stats loop)  │
-│                                       └── settings.rs (JSON persistido) │
+│  app/src/main.ts + player.ts  ◄──IPC/Events──►  app/src-tauri/src/      │
+│   ├── index.html (sala/config)                  ├── main.rs (tray/keys) │
+│   └── player.html (barra do player)             ├── player_win.rs (HWND)│
+│                                                 ├── room.rs (sessão)    │
+│                                                 └── settings.rs (JSON)  │
 └───────────────────────────────────────────────┬─────────────────────────┘
                                                 │
                                                 ▼
@@ -34,52 +35,49 @@ Este documento descreve a arquitetura interna, os fluxos de mídia e sinalizaç�
 ### Streamer (`core/src/streamer.rs`)
 
 ```
-Vídeo:
-  [d3d11screencapturesrc (monitor ou WGC janela)]
-    ──► d3d11convert (letterbox + gamma/primaries remap, NV12 em VRAM)
+Vídeo (Windows D3D11 / Linux PipeWire):
+  [d3d11screencapturesrc (monitor ou WGC janela) / pipewiresrc (portal)]
+    ──► d3d11convert / videoconvert (letterbox + gamma/primaries remap)
     ──► raw_tee
-          └──► queue (leaky) ──► encoder (AV1 ou H.264 hardware/CPU)
-                 ──► parser (av1parse ou h264parse)
-                 ──► high.tee
-                       └── [por espectador, até 4]
-                           queue (leaky) ──► rtpav1pay / rtph264pay ──► webrtcbin
+          ├──► queue (leaky) ──► encoder principal (AV1 ou H.264) ──► parser ──► high.tee
+          │                                                                          └──► [espectadores AV1]
+          └──► [sob demanda] queue (leaky) ──► encoder H.264 paralelo ──► h264parse ──► compat.tee
+                                                                                         └──► [espectadores só H.264]
 
-Áudio:
-  [wasapi2src (sistema / exclui processo / inclui processo)]
+Áudio (Windows WASAPI2 / Linux Pulse/PipeWire):
+  [wasapi2src (sistema / exclui processo / inclui processo) — hot-swap via IDLE probe]
     ──► audioconvert ──► audioresample (48kHz stereo)
-    ──► opusenc (128 kbps, 10 ms, inband-fec=true)
+    ──► opusenc (128 kbps, 10 ms, inband-fec=true, packet-loss-percentage=10)
     ──► rtpopuspay ──► atee
           └── [por espectador] queue (leaky) ──► webrtcbin
 ```
 
-- **Zero-copy na GPU:** quando o encoder suporta `memory:D3D11Memory` (`amfav1enc`, `amfh264enc`, `nvd3d11*`, `qsv*`, `mfh264enc`), os frames capturados e redimensionados não saem da VRAM até serem codificados.
-- **Bitrate adaptativo:** no modo `Auto`, o `Streamer::tick()` lê `remote-inbound-rtp` a cada segundo. Se a maior perda de pacotes entre os espectadores passar de `5%`, reduz o bitrate em `15%` (piso de 50% do alvo, mínimo `1500 kbps`); após 5 segundos com perda `< 1%`, recupera gradualmente até o bitrate alvo.
+- **Zero-copy na GPU:** quando o encoder suporta `memory:D3D11Memory` (`amfav1enc`, `amfh264enc`, `nvd3d11*`, `qsv*`, `mfh264enc`), captura, escala e codificação permanecem em VRAM.
+- **Dual-codec simultâneo:** se o streamer estiver em AV1 e entrar um espectador que só anuncia `["h264"]`, um segundo encoder H.264 compatível é ligado no `raw_tee` apenas enquanto houver espectadores H.264.
+- **Hot-swap de áudio:** se o Discord abrir após o início da transmissão no modo sem Discord, `Streamer::set_audio_source()` substitui a fonte de áudio com `PadProbeType::IDLE` sem interromper o vídeo.
+- **Bitrate adaptativo:** no modo `Auto`, `Streamer::tick()` lê `remote-inbound-rtp`; com perda `> 5%` reduz o bitrate em `15%` (piso de 50%, mínimo `1500 kbps`) nos encoders ativos, e recupera após 5 segundos com perda `< 1%`.
 
-### Viewer (`core/src/viewer.rs`)
+### Viewer e Player Integrado (`core/src/viewer.rs`, `app/src-tauri/src/player_win.rs`)
 
 ```
 webrtcbin ──► decodebin
-                ├── vídeo ──► queue ──► autovideosink (d3d11/d3d12, fullscreen habilitado)
+                ├── vídeo ──► queue ──► autovideosink (GstVideoOverlay -> child HWND no Windows)
                 └── áudio ──► queue ──► volume ──► audioconvert ──► audioresample ──► autoaudiosink
 ```
 
-- Decodificadores suportados para AV1: `d3d11av1dec` / `d3d12av1dec` (hardware) e `dav1ddec` (CPU, empacotado no instalador).
-- Decodificadores suportados para H.264: `d3d11h264dec` / `d3d12h264dec` (hardware) e `openh264dec` (CPU).
+- No Windows, `PlayerSurface` cria uma janela filha Win32 (`WS_CHILD | WS_CLIPSIBLINGS`, `HWND_TOP`) dentro da janela Tauri `"player"` ocupando toda a área acima da barra inferior de `48 px` (`player.html`), permitindo controles nativos em WebView2 sem sobrepor ou causar flicker no vídeo DXGI.
+- Decodificadores AV1: `d3d11av1dec` / `d3d12av1dec` (hardware) e `dav1ddec` (CPU). H.264: `d3d11h264dec` / `d3d12h264dec` e `openh264dec`.
 
 ## Protocolo de sinalização (`core/src/protocol.rs` ↔ `signaling/src/index.ts`)
 
-1. `POST /rooms` (exige `x-screenlive-key`) → gera código de 6 caracteres (`ABCDEFGHJKLMNPQRSTUVWXYZ23456789`).
-2. `GET /rooms/:code/ws?name=<nick>` (exige `x-screenlive-key`) → o Durable Object `Room`:
-   - Obtém STUN + credenciais TURN temporárias via API Cloudflare (se abaixo do teto mensal `TURN_MONTHLY_CAP_GB`).
-   - Aceita o WebSocket e envia imediatamente `{ type: "welcome", id, peers, iceServers, turnCapped }`.
-   - Notifica os demais membros com `{ type: "peer-joined", peer }`.
-3. Mensagens em tempo real:
-   - `stream`: anuncia `streaming: true/false` para a sala.
-   - `signal`: encaminha `watch`, `offer`, `answer`, `ice` e `bye` entre pares.
-   - `turn-usage`: reporta bytes enviados via TURN (com rate-limit de 5 s e teto de 250 MB por reporte) para o Durable Object `Usage`.
-   - `ping` / `pong`: keepalive a cada 20 s; o cliente encerra a conexão se não receber resposta até o próximo ciclo.
+1. `POST /rooms` (exige `x-screenlive-key`) → código de 6 caracteres (`ABCDEFGHJKLMNPQRSTUVWXYZ23456789`).
+2. `GET /rooms/:code/ws?name=<nick>` (exige `x-screenlive-key`) → `Room` busca STUN/TURN antes de aceitar o WebSocket e envia `welcome` imediatamente antes de qualquer broadcast.
+3. `GET /usage` (exige `x-screenlive-key`) → retorna consumo estimado do mês UTC (`{ month, usedGb, capGb, turnCapped }`).
+4. `Payload::Watch { codecs }` → o espectador anuncia seus codecs suportados (`["av1", "h264"]`).
+5. **Reconexão automática:** em caso de queda inesperada do WebSocket, o cliente tenta reconectar até 4 vezes (`1s → 2s → 4s → 8s`) mantendo o stream de captura ativo.
 
 ## Segurança e chaves
 
-- **Chave de acesso (`x-screenlive-key`):** a build pública do GitHub não embute servidor padrão nem chave; o usuário configura URL do servidor e chave via convite (`csl1:...`) ou em ⚙️ Configurações (`settings.json`). No servidor, apenas o SHA-256 fica armazenado em `APP_KEY_SHA256` (secret da Cloudflare). Para builds locais/CLI, `core/build.rs` ainda suporta `.app-key` ou `SCREENLIVE_APP_KEY`. Rotacionável via `node scripts/gen-app-key.mjs --rotate`.
-- **Chave do Tauri Updater (`~/.tauri/crimson-screenlive.key`):** assinatura Ed25519/minisign dos instaladores para atualização automática segura. A chave pública fica em `app/src-tauri/tauri.conf.json` e a privada no secret `TAURI_SIGNING_PRIVATE_KEY` do GitHub Actions.
+- **Build pública sem segredos:** o código e os instaladores gerados no GitHub Actions não possuem servidor padrão nem chave embutida. Cada host sobe seu Worker e compartilha um convite `csl1:<base64url>` contendo `{ s: url, k: key }`.
+- **Chave do servidor (`APP_KEY_SHA256`):** armazenada como secret na Cloudflare (apenas SHA-256). Rotacionável via `node scripts/gen-app-key.mjs --rotate`.
+- **Chave do Tauri Updater (`~/.tauri/crimson-screenlive.key`):** assinatura minisign/Ed25519 para atualizações automáticas seguras.

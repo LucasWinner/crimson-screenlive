@@ -22,8 +22,9 @@ use screenlive_core::streamer::{StreamConfig, Streamer};
 use screenlive_core::viewer::{ViewEnd, Viewer};
 use serde::Serialize;
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::player_win::PlayerSurface;
 use crate::settings;
 
 type Shared = Arc<Mutex<Option<Room>>>;
@@ -72,6 +73,25 @@ impl AppState {
         if let Some(gen) = gen {
             end_stream(app, &self.room, gen, None);
         }
+    }
+
+    pub fn stop_active_watch(&self, app: &AppHandle) {
+        let current = self
+            .room
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|r| Some((r.generation, r.viewer.as_ref()?.obj.clone())));
+        if let Some((gen, v)) = current {
+            end_watch(app, &self.room, gen, &v, "closed".into());
+        }
+    }
+}
+
+fn hide_player_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("player") {
+        let _ = win.set_fullscreen(false);
+        let _ = win.hide();
     }
 }
 
@@ -278,12 +298,13 @@ pub async fn join_room(app: AppHandle, state: State<'_, AppState>, code: String,
 }
 
 #[tauri::command]
-pub fn leave_room(state: State<'_, AppState>) {
+pub fn leave_room(app: AppHandle, state: State<'_, AppState>) {
     state.shutdown();
+    hide_player_window(&app);
 }
 
 #[tauri::command]
-pub fn start_stream(
+pub async fn start_stream(
     app: AppHandle,
     state: State<'_, AppState>,
     monitor_id: Option<u64>,
@@ -346,8 +367,14 @@ pub fn start_stream(
         relay_saver: false,
     };
 
-    let streamer = Arc::new(Streamer::new(&cfg, sig, ice).map_err(|e| format!("{e:#}"))?);
-    streamer.start().map_err(|e| format!("{e:#}"))?;
+    // Run on blocking pool so interactive OS capture pickers (e.g. Linux portal) don't block the UI thread.
+    let streamer = tauri::async_runtime::spawn_blocking(move || {
+        let s = Arc::new(Streamer::new(&cfg, sig, ice).map_err(|e| format!("{e:#}"))?);
+        s.start().map_err(|e| format!("{e:#}"))?;
+        Ok::<Arc<Streamer>, String>(s)
+    })
+    .await
+    .map_err(|e| format!("falha ao iniciar captura: {e}"))??;
 
     let status = StreamStatus {
         active: true,
@@ -445,9 +472,29 @@ fn start_watching_peer(
     ice: Vec<IceServer>,
 ) -> CmdResult<WatchStatus> {
     let saved = settings::load(app);
-    let viewer = Arc::new(Viewer::new(peer.clone(), sig, &ice, false).map_err(|e| format!("{e:#}"))?);
+    let surface_hwnd = app
+        .try_state::<Mutex<Option<PlayerSurface>>>()
+        .and_then(|s| s.lock().unwrap().as_ref().map(|p| p.hwnd()));
+    let viewer = Arc::new(
+        Viewer::new_with_window(peer.clone(), sig, &ice, false, surface_hwnd).map_err(|e| format!("{e:#}"))?,
+    );
     viewer.set_volume(saved.watch_volume, saved.watch_muted);
     viewer.start().map_err(|e| format!("{e:#}"))?;
+
+    if surface_hwnd.is_some() {
+        if let Some(win) = app.get_webview_window("player") {
+            let _ = win.set_title(&format!("Crimson ScreenLive — Assistindo {}", peer.name));
+            let _ = win.show();
+            let _ = win.set_focus();
+            if let (Ok(size), Ok(scale)) = (win.inner_size(), win.scale_factor()) {
+                if let Some(surf) = app.try_state::<Mutex<Option<PlayerSurface>>>() {
+                    if let Some(p) = surf.lock().unwrap().as_ref() {
+                        p.resize(size.width, size.height, scale);
+                    }
+                }
+            }
+        }
+    }
 
     let status = WatchStatus {
         active: true,
@@ -494,16 +541,43 @@ fn start_watching_peer(
 
 #[tauri::command]
 pub fn stop_watch(app: AppHandle, state: State<'_, AppState>) {
-    let current = state.room.lock().unwrap().as_ref().and_then(|r| Some((r.generation, r.viewer.as_ref()?.obj.clone())));
-    if let Some((gen, v)) = current {
-        end_watch(&app, &state.room, gen, &v, "closed".into());
+    state.stop_active_watch(&app);
+}
+
+#[tauri::command]
+pub fn get_watch_state(state: State<'_, AppState>) -> WatchStatus {
+    let guard = state.room.lock().unwrap();
+    let Some(v) = guard.as_ref().and_then(|r| r.viewer.as_ref()).map(|v| v.obj.clone()) else {
+        return WatchStatus::default();
+    };
+    WatchStatus {
+        active: true,
+        streamer_id: Some(v.streamer().id.clone()),
+        streamer_name: Some(v.streamer().name.clone()),
+        ..Default::default()
     }
 }
 
 #[tauri::command]
-pub fn toggle_fullscreen(state: State<'_, AppState>) -> CmdResult<bool> {
+pub fn get_watch_volume(app: AppHandle) -> serde_json::Value {
+    let s = settings::load(&app);
+    serde_json::json!({ "volume": s.watch_volume, "muted": s.watch_muted })
+}
+
+#[tauri::command]
+pub fn toggle_fullscreen(app: AppHandle, state: State<'_, AppState>) -> CmdResult<bool> {
     let viewer = state.room.lock().unwrap().as_ref().and_then(|r| Some(r.viewer.as_ref()?.obj.clone()));
     let viewer = viewer.ok_or("você não está assistindo nada")?;
+    let has_surface = app
+        .try_state::<Mutex<Option<PlayerSurface>>>()
+        .is_some_and(|s| s.lock().unwrap().is_some());
+    if has_surface {
+        if let Some(win) = app.get_webview_window("player") {
+            let next = !win.is_fullscreen().unwrap_or(false);
+            let _ = win.set_fullscreen(next);
+            return Ok(next);
+        }
+    }
     viewer.toggle_fullscreen().ok_or_else(|| "a janela de vídeo ainda não abriu".into())
 }
 
@@ -685,6 +759,7 @@ async fn room_loop(app: AppHandle, shared: Shared, gen: u64, mut events: tokio::
                         room.loop_task = None; // don't abort ourselves mid-cleanup
                         drop(guard);
                         shutdown(room);
+                        hide_player_window(&app);
                         let _ = app.emit("stream-status", StreamStatus::default());
                         let _ = app.emit("watch-status", WatchStatus::default());
                         let _ = app.emit("room-closed", serde_json::json!({ "reason": "conexão com o servidor perdida" }));
@@ -879,6 +954,7 @@ fn end_watch(app: &AppHandle, shared: &Shared, gen: u64, which: &Arc<Viewer>, re
     if let Some(v) = active {
         v.bus_task.abort();
         v.obj.stop();
+        hide_player_window(app);
         let _ = app.emit("watch-status", WatchStatus { ended: Some(reason), ..Default::default() });
     }
 }

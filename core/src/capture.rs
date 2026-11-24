@@ -1,12 +1,17 @@
 //! Video/audio sources, described as gst-launch fragments that end in raw frames
 //! ready for the chosen encoder.
 
-#[cfg(not(windows))]
-use anyhow::bail;
 use anyhow::Result;
 use gst::prelude::*;
 
 use crate::encoder::{EncoderSpec, Memory};
+
+/// Prepared capture pipeline fragment plus an optional RAII guard keeping OS
+/// capture handles (such as a Linux xdg-desktop-portal session & PipeWire fd) alive.
+pub struct PreparedVideo {
+    pub fragment: String,
+    pub guard: Option<Box<dyn std::any::Any + Send + Sync>>,
+}
 
 #[derive(Debug, Clone)]
 pub enum VideoSource {
@@ -89,6 +94,15 @@ fn pixel_format(enc: &EncoderSpec) -> &'static str {
     }
 }
 
+/// Prepares a video capture source, opening an OS screencast session on Linux when needed.
+pub fn prepare_video(src: &VideoSource, enc: &EncoderSpec, fmt: &VideoFormat) -> Result<PreparedVideo> {
+    #[cfg(not(windows))]
+    if !matches!(src, VideoSource::Test) {
+        return prepare_linux_screencast(src, enc, fmt);
+    }
+    Ok(PreparedVideo { fragment: video_fragment(src, enc, fmt)?, guard: None })
+}
+
 /// Returns a pipeline fragment producing raw video for `enc`, scaled with
 /// letterboxing to `fmt` (so ultrawide/4K monitors keep their aspect ratio).
 pub fn video_fragment(src: &VideoSource, enc: &EncoderSpec, fmt: &VideoFormat) -> Result<String> {
@@ -130,9 +144,69 @@ fn capture_fragment(select: &str, enc: &EncoderSpec, w: u32, h: u32, fps: u32) -
 
 #[cfg(not(windows))]
 fn capture_fragment(_select: &str, _enc: &EncoderSpec, _w: u32, _h: u32, _fps: u32) -> Result<String> {
-    // TODO(linux): request a ScreenCast session through xdg-desktop-portal
-    // (ashpd) and capture with `pipewiresrc fd=.. path=..`.
-    bail!("screen capture on Linux is not implemented yet; use --source test")
+    anyhow::bail!("use prepare_video() on Linux to open an xdg-desktop-portal screencast session")
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_linux_screencast(src: &VideoSource, enc: &EncoderSpec, fmt: &VideoFormat) -> Result<PreparedVideo> {
+    use std::os::fd::{AsRawFd, OwnedFd};
+    use anyhow::Context;
+    use ashpd::desktop::screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType};
+    use ashpd::desktop::{PersistMode, Session};
+
+    struct PortalGuard {
+        _fd: OwnedFd,
+        _session: Session<Screencast>,
+    }
+
+    let source_types = match src {
+        VideoSource::Window(_) => SourceType::WINDOW,
+        _ => SourceType::MONITOR | SourceType::WINDOW,
+    };
+
+    let (fd, node_id, session) = std::thread::spawn(move || -> Result<(OwnedFd, u32, Session<Screencast>)> {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        rt.block_on(async move {
+            let proxy = Screencast::new().await.context("xdg-desktop-portal ScreenCast unavailable")?;
+            let session = proxy.create_session(Default::default()).await?;
+            proxy
+                .select_sources(
+                    &session,
+                    SelectSourcesOptions::default()
+                        .set_cursor_mode(CursorMode::EMBEDDED)
+                        .set_sources(source_types)
+                        .set_multiple(false)
+                        .set_persist_mode(PersistMode::DoNot),
+                )
+                .await?;
+            let response = proxy.start(&session, None, Default::default()).await?.response()?;
+            let stream = response
+                .streams()
+                .first()
+                .context("no screen or window selected in portal")?;
+            let node_id = stream.pipe_wire_node_id();
+            let fd = proxy.open_pipe_wire_remote(&session, Default::default()).await?;
+            Ok((fd, node_id, session))
+        })
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("screencast portal thread panicked"))??;
+
+    let raw_fd = fd.as_raw_fd();
+    let VideoFormat { width: w, height: h, fps } = *fmt;
+    let pix = pixel_format(enc);
+    let fragment = format!(
+        "pipewiresrc fd={raw_fd} path={node_id} do-timestamp=true keepalive-time=1000 \
+         ! videorate drop-only=true \
+         ! videoconvert ! videoscale add-borders=true \
+         ! capsfilter caps=\"video/x-raw,format={pix},width={w},height={h},framerate={fps}/1\""
+    );
+    Ok(PreparedVideo { fragment, guard: Some(Box::new(PortalGuard { _fd: fd, _session: session })) })
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
+fn prepare_linux_screencast(_src: &VideoSource, _enc: &EncoderSpec, _fmt: &VideoFormat) -> Result<PreparedVideo> {
+    anyhow::bail!("screen capture is not implemented on this OS; use --source test")
 }
 
 /// Fragment that rescales the raw output of [`video_fragment`] (same source and

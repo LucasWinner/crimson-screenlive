@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Crimson ScreenLive",
-  "version": "0.7.1",
+  "version": "1.0.0",
   "identifier": "com.crimson.screenlive",
   "build": {
     "frontendDist": "../dist",
@@ -18,6 +18,16 @@
         "height": 720,
         "minWidth": 380,
         "minHeight": 560
+      },
+      {
+        "label": "player",
+        "title": "Crimson ScreenLive — Assistindo",
+        "url": "player.html",
+        "width": 1024,
+        "height": 620,
+        "minWidth": 480,
+        "minHeight": 320,
+        "visible": false
       }
     ],
     "security": {

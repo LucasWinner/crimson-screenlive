@@ -3,6 +3,18 @@
 Todas as mudanças notáveis neste projeto são documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e este projeto segue [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [1.0.0] - 2026-11-24
+
+### Adicionado
+- **Player integrado (Windows):** nova janela dedicada do Tauri (`player.html`) com vídeo por hardware embutido via `GstVideoOverlay` + barra inferior de controles (nome, FPS, latência, perda de pacotes, indicador `VIA SERVIDOR`, mudo, slider de volume 0–150%, tela cheia com `F11`/`Alt+Enter`/`Esc` e botão Parar).
+- **Negociação de codec e dual-codec simultâneo (`AV1` + `H.264`):** `Payload::Watch` anuncia os codecs suportados (`["av1", "h264"]`). Se um espectador só suportar H.264 enquanto outros usam AV1, o streamer sobe um segundo encoder H.264 paralelo no mesmo `raw_tee` sem prejudicar a qualidade AV1 dos demais, desligando-o quando não houver mais espectadores H.264.
+- **Exclusão dinâmica de Discord ao vivo:** se o Discord for aberto depois do início de uma transmissão no modo sem Discord, o áudio é trocado automaticamente via `PadProbeType::IDLE` no `atee` sem interromper o vídeo nem desconectar espectadores.
+- **Reconexão automática na sala:** quedas momentâneas do WebSocket disparam até 4 tentativas automáticas com backoff (`1s → 2s → 4s → 8s`), preservando transmissão e retomando visualização.
+- **Atalhos globais em jogo:** `Ctrl+Shift+M` (alternar mudo do espectador) e `Ctrl+Shift+S` (parar transmissão) configuráveis em ⚙️ Configurações.
+- **Medidor mensal do TURN nas Configurações:** exibe uso atual vs teto configurado (`GET /usage`) com barra de progresso.
+- **Suporte Linux (Wayland/X11):** captura de tela/janela via `xdg-desktop-portal` (`ashpd`) + `pipewiresrc` (`core/src/capture.rs`) e job de verificação Linux no CI.
+- **CI/CD em Node 24 nativo:** workflows atualizados para `actions/checkout@v7`, `actions/setup-node@v7`, `softprops/action-gh-release@v3` e `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`.
+
 ## [0.7.1] - 2026-11-24
 
 ### Corrigido

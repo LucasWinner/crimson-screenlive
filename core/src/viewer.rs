@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::StreamExt;
 use gst::prelude::*;
+use gst_video::prelude::VideoOverlayExtManual;
 use tokio::sync::mpsc;
 
 use crate::encoder;
@@ -93,17 +94,47 @@ pub struct Viewer {
 
 impl Drop for Viewer {
     fn drop(&mut self) {
+        if let Some(bus) = self.pipeline.bus() {
+            bus.unset_sync_handler();
+        }
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
 
 impl Viewer {
     pub fn new(streamer: Peer, sig: SignalingHandle, ice: &[IceServer], headless: bool) -> Result<Self> {
+        Self::new_with_window(streamer, sig, ice, headless, None)
+    }
+
+    pub fn new_with_window(
+        streamer: Peer,
+        sig: SignalingHandle,
+        ice: &[IceServer],
+        headless: bool,
+        window_handle: Option<usize>,
+    ) -> Result<Self> {
         let pipeline = gst::Pipeline::with_name("viewer");
         let webrtc = webrtc::new_webrtcbin("recv", ice, &sig, &streamer.id)?;
         // Jitter buffer: small enough to feel live, big enough to absorb Wi-Fi jitter.
         webrtc.set_property("latency", 120u32);
         pipeline.add(&webrtc)?;
+
+        if let (false, Some(hwnd)) = (headless, window_handle) {
+            if let Some(bus) = pipeline.bus() {
+                bus.set_sync_handler(move |_, msg| {
+                    if gst_video::is_video_overlay_prepare_window_handle_message(msg) {
+                        if let Some(src) = msg.src() {
+                            if let Some(overlay) = src.dynamic_cast_ref::<gst_video::VideoOverlay>() {
+                                unsafe {
+                                    overlay.set_window_handle(hwnd);
+                                }
+                            }
+                        }
+                    }
+                    gst::BusSyncReply::Pass
+                });
+            }
+        }
 
         {
             let pipe_weak = pipeline.downgrade();
@@ -126,6 +157,7 @@ impl Viewer {
         let volume_elem: Arc<Mutex<Option<gst::Element>>> = Arc::new(Mutex::new(None));
         let (vf, ab, vol_val, mute_val, vol_el) =
             (video_frames.clone(), audio_buffers.clone(), volume.clone(), muted.clone(), volume_elem.clone());
+        let embedded = window_handle.is_some();
         let pipe_weak = pipeline.downgrade();
         webrtc.connect_pad_added(move |_, pad| {
             if pad.direction() != gst::PadDirection::Src {
@@ -136,6 +168,7 @@ impl Viewer {
                 &pipeline,
                 pad,
                 headless,
+                embedded,
                 vf.clone(),
                 ab.clone(),
                 vol_val.clone(),
@@ -263,7 +296,7 @@ impl Viewer {
             .into_iter()
             .flatten()
             .find(|e| e.find_property("fullscreen").is_some())?;
-        configure_fullscreen_sink(&sink);
+        configure_video_sink(&sink, false);
         let on = !sink.property::<bool>("fullscreen");
         sink.set_property("fullscreen", on);
         Some(on)
@@ -272,6 +305,9 @@ impl Viewer {
     pub fn stop(&self) {
         if !self.stopped.swap(true, Ordering::SeqCst) {
             self.sig.signal(&self.streamer.id, Payload::Bye);
+        }
+        if let Some(bus) = self.pipeline.bus() {
+            bus.unset_sync_handler();
         }
         let _ = self.pipeline.set_state(gst::State::Null);
     }
@@ -324,11 +360,14 @@ impl Viewer {
     }
 }
 
-fn configure_fullscreen_sink(elem: &gst::Element) {
+fn configure_video_sink(elem: &gst::Element, embedded: bool) {
     // d3d11videosink ignores `fullscreen` unless `fullscreen-toggle-mode`
     // includes `property`; enable Alt+Enter on d3d11/d3d12 as well.
     encoder::set_if(elem, "fullscreen-toggle-mode", "property+alt-enter");
     encoder::set_if(elem, "fullscreen-on-alt-enter", "true");
+    if embedded {
+        encoder::set_if(elem, "error-on-closed", "false");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -336,6 +375,7 @@ fn on_incoming_stream(
     pipeline: &gst::Pipeline,
     pad: &gst::Pad,
     headless: bool,
+    embedded: bool,
     video_frames: Arc<AtomicU64>,
     audio_buffers: Arc<AtomicU64>,
     volume: Arc<Mutex<f64>>,
@@ -369,7 +409,7 @@ fn on_incoming_stream(
         let res: Result<()> = (|| {
             let bin = gst::parse::bin_from_description(&desc, true)?;
             if is_video && !headless {
-                bin.connect_deep_element_added(|_, _, elem| configure_fullscreen_sink(elem));
+                bin.connect_deep_element_added(move |_, _, elem| configure_video_sink(elem, embedded));
             }
             if !is_video && !headless {
                 if let Some(vol) = bin.by_name("watch-vol") {
