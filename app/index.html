@@ -58,6 +58,9 @@
 
       <!-- Room -->
       <section id="room" class="screen" hidden>
+        <div id="room-reconnecting" class="relay-note" hidden>
+          <span id="room-reconnecting-text">Conexão oscilou — reconectando…</span>
+        </div>
         <div class="card room-head">
           <div>
             <div class="label">Código da sala</div>
@@ -215,6 +218,13 @@
           <button type="button" id="copy-invite" class="btn ghost small grow">Copiar convite</button>
         </div>
         <p class="muted small">Peça o convite para quem hospeda a sala, ou suba o seu próprio servidor Cloudflare gratuito (veja o README).</p>
+        <div id="turn-usage-box" class="turn-usage" hidden>
+          <div class="row-between">
+            <span id="turn-usage-label">Cota TURN do mês</span>
+            <span id="turn-usage-value" class="muted small"></span>
+          </div>
+          <div class="progress"><div id="turn-usage-bar" class="progress-bar"></div></div>
+        </div>
         <p id="settings-error" class="form-error" hidden></p>
         <p id="settings-ok" class="form-ok" hidden></p>
         <div class="row-between">

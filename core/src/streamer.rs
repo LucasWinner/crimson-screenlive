@@ -115,8 +115,8 @@ struct Inner {
     low: Mutex<Option<VideoTier>>,
     atee: Option<gst::Element>,
     peers: Mutex<HashMap<String, PeerConn>>,
-    sig: SignalingHandle,
-    ice: Vec<IceServer>,
+    sig: Mutex<SignalingHandle>,
+    ice: Mutex<Vec<IceServer>>,
     source: VideoSource,
     spec: EncoderSpec,
     fps: u32,
@@ -127,6 +127,16 @@ struct Inner {
     current_bitrate_kbps: AtomicU32,
     auto_bitrate: bool,
     low_loss_streak: AtomicU32,
+}
+
+impl Inner {
+    fn send_sig(&self, msg: ClientMsg) {
+        self.sig.lock().unwrap().send(msg);
+    }
+
+    fn signal(&self, to: &str, payload: Payload) {
+        self.sig.lock().unwrap().signal(to, payload);
+    }
 }
 
 impl Drop for Inner {
@@ -227,8 +237,8 @@ impl Streamer {
                 low: Mutex::new(None),
                 atee,
                 peers: Mutex::default(),
-                sig,
-                ice,
+                sig: Mutex::new(sig),
+                ice: Mutex::new(ice),
                 source: cfg.video.clone(),
                 spec,
                 fps: cfg.format.fps,
@@ -258,17 +268,29 @@ impl Streamer {
 
     pub fn start(&self) -> Result<()> {
         self.inner.pipeline.set_state(gst::State::Playing).context("could not start capture pipeline")?;
-        self.inner.sig.send(ClientMsg::Stream { streaming: true });
+        self.inner.send_sig(ClientMsg::Stream { streaming: true });
         Ok(())
+    }
+
+    /// Replaces the signaling handle after an automatic room reconnect while
+    /// keeping the capture and encoder pipeline running uninterrupted.
+    pub fn reconnected(&self, sig: SignalingHandle, ice: Vec<IceServer>) {
+        let stale_ids: Vec<String> = self.inner.peers.lock().unwrap().keys().cloned().collect();
+        for id in stale_ids {
+            remove_peer(&self.inner, &id);
+        }
+        *self.inner.sig.lock().unwrap() = sig;
+        *self.inner.ice.lock().unwrap() = ice;
+        self.inner.send_sig(ClientMsg::Stream { streaming: true });
     }
 
     pub fn stop(&self) {
         let peers: Vec<(String, PeerConn)> = self.inner.peers.lock().unwrap().drain().collect();
         for (id, _) in &peers {
-            self.inner.sig.signal(id, Payload::Bye);
+            self.inner.signal(id, Payload::Bye);
         }
         self.report_relay_usage();
-        self.inner.sig.send(ClientMsg::Stream { streaming: false });
+        self.inner.send_sig(ClientMsg::Stream { streaming: false });
         let _ = self.inner.pipeline.set_state(gst::State::Null);
         for (_, peer) in peers {
             for b in std::iter::once(peer.video).chain(peer.audio) {
@@ -406,7 +428,7 @@ impl Streamer {
     pub fn report_relay_usage(&self) {
         let bytes = self.take_relay_bytes();
         if bytes > 0 {
-            self.inner.sig.send(ClientMsg::TurnUsage { bytes });
+            self.inner.send_sig(ClientMsg::TurnUsage { bytes });
         }
     }
 
@@ -508,14 +530,16 @@ fn add_peer(inner: &Arc<Inner>, id: &str) -> Result<()> {
     }
     if inner.peers.lock().unwrap().len() >= MAX_VIEWERS {
         log::warn!("refusing viewer {id}: limit of {MAX_VIEWERS} reached");
-        inner.sig.signal(id, Payload::Bye);
+        inner.signal(id, Payload::Bye);
         return Ok(());
     }
 
+    let sig = inner.sig.lock().unwrap().clone();
+    let ice = inner.ice.lock().unwrap().clone();
     let seq = inner.next_peer_seq.fetch_add(1, Ordering::Relaxed);
-    let webrtc = webrtc::new_webrtcbin(&format!("peer-{id}-{seq}"), &inner.ice, &inner.sig, id)?;
+    let webrtc = webrtc::new_webrtcbin(&format!("peer-{id}-{seq}"), &ice, &sig, id)?;
     {
-        let (sig, remote) = (inner.sig.clone(), id.to_owned());
+        let remote = id.to_owned();
         webrtc.connect("on-negotiation-needed", false, move |values| {
             let w = values[0].get::<gst::Element>().expect("webrtcbin");
             let (sig, remote) = (sig.clone(), remote.clone());

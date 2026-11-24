@@ -46,6 +46,7 @@ interface Settings {
   watchVolume: number; watchMuted: boolean;
 }
 interface AppInfo { pid: number; exe: string; title: string }
+interface TurnUsageInfo { month: string; usedGb: number; capGb: number; turnCapped: boolean }
 interface AudioSources { supported: boolean; discordRunning: boolean; apps: AppInfo[] }
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -53,6 +54,8 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 const ui = {
   welcome: $("welcome"),
   room: $("room"),
+  roomReconnecting: $("room-reconnecting"),
+  roomReconnectingText: $("room-reconnecting-text"),
   serverSetup: $("server-setup"),
   inviteInput: $<HTMLInputElement>("invite-input"),
   applyInvite: $<HTMLButtonElement>("apply-invite"),
@@ -110,6 +113,10 @@ const ui = {
   toggleKey: $("toggle-key"),
   pasteInvite: $("paste-invite"),
   copyInvite: $("copy-invite"),
+  turnUsageBox: $("turn-usage-box"),
+  turnUsageLabel: $("turn-usage-label"),
+  turnUsageValue: $("turn-usage-value"),
+  turnUsageBar: $("turn-usage-bar"),
   toast: $("toast"),
 };
 
@@ -191,6 +198,7 @@ function showRoom(view: RoomView | null) {
   room = view;
   ui.welcome.hidden = !!view;
   ui.room.hidden = !view;
+  ui.roomReconnecting.hidden = true;
   if (!view) {
     streaming = false;
     watchingId = null;
@@ -701,7 +709,29 @@ async function openSettings() {
     ? `Neste PC: ${sysInfo.av1Encoder} disponível. Use H.264 se algum amigo estiver numa versão antiga do app.`
     : "Neste PC não há codificador AV1 por hardware; o modo Automático usará H.264.";
   void loadAudioSources();
+  void loadTurnUsage();
   ui.settingsDialog.showModal();
+}
+
+async function loadTurnUsage() {
+  if (!settings.serverUrl) {
+    ui.turnUsageBox.hidden = true;
+    return;
+  }
+  try {
+    const u = await invoke<TurnUsageInfo>("turn_usage");
+    const pct = u.capGb > 0 ? Math.min(100, Math.round((u.usedGb / u.capGb) * 100)) : 0;
+    ui.turnUsageLabel.textContent = `Cota TURN (${u.month})`;
+    ui.turnUsageValue.textContent = u.turnCapped
+      ? `${u.usedGb.toFixed(1).replace(".", ",")} / ${u.capGb} GB (teto atingido)`
+      : `${u.usedGb.toFixed(1).replace(".", ",")} / ${u.capGb} GB (${pct}%)`;
+    ui.turnUsageBar.style.width = `${pct}%`;
+    ui.turnUsageBar.classList.toggle("warn", pct >= 70 && !u.turnCapped);
+    ui.turnUsageBar.classList.toggle("full", u.turnCapped);
+    ui.turnUsageBox.hidden = false;
+  } catch {
+    ui.turnUsageBox.hidden = true;
+  }
 }
 ui.openSettings.onclick = () => void openSettings();
 ui.changeAudio.onclick = () => void openSettings();
@@ -796,6 +826,14 @@ void listen<RoomView>("room-updated", (e) => {
     room = e.payload;
     renderPeople();
   }
+});
+void listen<{ attempt: number; maxAttempts: number }>("room-reconnecting", (e) => {
+  ui.roomReconnectingText.textContent = `Conexão oscilou — reconectando à sala (${e.payload.attempt}/${e.payload.maxAttempts})…`;
+  ui.roomReconnecting.hidden = false;
+});
+void listen("room-reconnected", () => {
+  ui.roomReconnecting.hidden = true;
+  toast("Reconectado à sala!", true);
 });
 void listen<{ reason: string }>("room-closed", (e) => {
   showRoom(null);

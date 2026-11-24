@@ -17,7 +17,7 @@ use screenlive_core::capture::{self, MonitorInfo, VideoFormat, VideoSource};
 use screenlive_core::encoder;
 use screenlive_core::ice::IceServer;
 use screenlive_core::protocol::{Peer, ServerMsg};
-use screenlive_core::signaling::{normalize_code, Server, SignalingHandle};
+use screenlive_core::signaling::{normalize_code, Server, SignalingHandle, TurnUsageInfo};
 use screenlive_core::streamer::{StreamConfig, Streamer};
 use screenlive_core::viewer::{ViewEnd, Viewer};
 use serde::Serialize;
@@ -58,6 +58,7 @@ struct Active<T> {
 
 struct Room {
     generation: u64,
+    server: Server,
     code: String,
     me: String,
     name: String,
@@ -230,6 +231,11 @@ fn friendly_server_error(e: anyhow::Error) -> String {
 }
 
 #[tauri::command]
+pub async fn turn_usage(app: AppHandle) -> CmdResult<TurnUsageInfo> {
+    configured_server(&app)?.usage().await.map_err(friendly_server_error)
+}
+
+#[tauri::command]
 pub async fn create_room(app: AppHandle, state: State<'_, AppState>, name: String) -> CmdResult<RoomView> {
     let server = configured_server(&app)?;
     let code = server.create_room().await.map_err(friendly_server_error)?;
@@ -394,8 +400,18 @@ pub fn watch(app: AppHandle, state: State<'_, AppState>, peer_id: String) -> Cmd
         old.bus_task.abort();
         old.obj.stop();
     }
+    start_watching_peer(&app, &shared, gen, peer, sig, ice)
+}
 
-    let saved = settings::load(&app);
+fn start_watching_peer(
+    app: &AppHandle,
+    shared: &Shared,
+    gen: u64,
+    peer: Peer,
+    sig: SignalingHandle,
+    ice: Vec<IceServer>,
+) -> CmdResult<WatchStatus> {
+    let saved = settings::load(app);
     let viewer = Arc::new(Viewer::new(peer.clone(), sig, &ice, false).map_err(|e| format!("{e:#}"))?);
     viewer.set_volume(saved.watch_volume, saved.watch_muted);
     viewer.start().map_err(|e| format!("{e:#}"))?;
@@ -490,6 +506,7 @@ async fn join(app: AppHandle, shared: Shared, server: Server, code: String, name
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
     let room = Room {
         generation,
+        server,
         code,
         me,
         name,
@@ -542,6 +559,92 @@ async fn room_loop(app: AppHandle, shared: Shared, gen: u64, mut events: tokio::
             msg = events.recv() => match msg {
                 Some(msg) => on_message(&app, &shared, gen, msg),
                 None => {
+                    let params = {
+                        let guard = shared.lock().unwrap();
+                        guard.as_ref().filter(|r| r.generation == gen).map(|r| {
+                            (
+                                r.server.clone(),
+                                r.code.clone(),
+                                r.name.clone(),
+                                r.viewer.as_ref().map(|v| v.obj.streamer().name.clone()),
+                            )
+                        })
+                    };
+                    let Some((server, code, name, watched_name)) = params else { return };
+                    let delays = [1u64, 2, 4, 8];
+                    let max_attempts = delays.len();
+                    let mut reconnected = None;
+                    for (idx, delay) in delays.iter().enumerate() {
+                        let attempt = idx + 1;
+                        let _ = app.emit(
+                            "room-reconnecting",
+                            serde_json::json!({ "attempt": attempt, "maxAttempts": max_attempts }),
+                        );
+                        tokio::time::sleep(Duration::from_secs(*delay)).await;
+                        if shared.lock().unwrap().as_ref().is_none_or(|r| r.generation != gen) {
+                            return;
+                        }
+                        match server.enter(&code, &name).await {
+                            Ok(joined) => {
+                                reconnected = Some(joined);
+                                break;
+                            }
+                            Err(e) => {
+                                let msg = format!("{e:#}");
+                                log::warn!("reconnect attempt {attempt}/{max_attempts} failed: {msg}");
+                                if msg.contains("invalid app key") || msg.contains("409") || msg.contains("full") {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(joined) = reconnected {
+                        let (sig, new_events, me, peers, ice) =
+                            (joined.sig, joined.events, joined.me, joined.peers, joined.ice);
+                        let (view, streamer, old_viewer) = {
+                            let mut guard = shared.lock().unwrap();
+                            let Some(room) = guard.as_mut().filter(|r| r.generation == gen) else { return };
+                            room.me = me;
+                            room.peers = peers.clone();
+                            room.sig = sig.clone();
+                            room.ice = ice.clone();
+                            (
+                                room.view(),
+                                room.streamer.as_ref().map(|s| s.obj.clone()),
+                                room.viewer.take(),
+                            )
+                        };
+                        events = new_events;
+                        if let Some(old) = old_viewer {
+                            old.bus_task.abort();
+                            old.obj.stop();
+                        }
+                        if let Some(s) = streamer {
+                            s.reconnected(sig.clone(), ice.clone());
+                        }
+                        let _ = app.emit("room-updated", view);
+                        let _ = app.emit("room-reconnected", serde_json::json!({}));
+                        if let Some(target_name) = watched_name {
+                            if let Some(target) =
+                                peers.into_iter().find(|p| p.streaming && p.name.eq_ignore_ascii_case(&target_name))
+                            {
+                                if let Err(e) = start_watching_peer(&app, &shared, gen, target, sig, ice) {
+                                    let _ = app.emit(
+                                        "watch-status",
+                                        WatchStatus { ended: Some(e), ..Default::default() },
+                                    );
+                                }
+                            } else {
+                                let _ = app.emit(
+                                    "watch-status",
+                                    WatchStatus { ended: Some("ended".into()), ..Default::default() },
+                                );
+                            }
+                        }
+                        continue;
+                    }
+
                     let mut guard = shared.lock().unwrap();
                     if guard.as_ref().is_some_and(|r| r.generation == gen) {
                         let mut room = guard.take().unwrap();

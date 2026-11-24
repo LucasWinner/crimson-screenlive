@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-windows:
     name: Build & Publish Windows Installer
@@ -19,12 +22,12 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable-x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -101,7 +104,7 @@ jobs:
           $manifest | ConvertTo-Json -Depth 4 | Set-Content -Path "$outDir/latest.json" -Encoding utf8
           echo "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
           echo "APP_VERSION=$ver" >> $env:GITHUB_ENV
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Crimson ScreenLive ${{ env.APP_VERSION }}

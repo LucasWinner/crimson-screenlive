@@ -2,17 +2,20 @@ name: CI
 
 on:
   push:
-    branches: [main, "v*"]
+    branches: [main, "v*", "feat/**"]
   pull_request:
     branches: [main]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   signaling:
     name: Signaling Worker (TS + Unit Tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -25,8 +28,8 @@ jobs:
     name: Desktop Frontend (TypeScript + Vite)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -41,13 +44,13 @@ jobs:
       GST_VERSION: "1.28.8"
       GST_ROOT: "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64"
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable-x86_64-pc-windows-msvc
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: Swatinem/rust-cache@v2.9.3
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm

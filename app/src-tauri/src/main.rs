@@ -100,6 +100,7 @@ fn main() {
             settings::save_settings,
             room::system_info,
             room::audio_sources,
+            room::turn_usage,
             room::create_room,
             room::join_room,
             room::leave_room,

@@ -112,6 +112,11 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 .settings h2 { margin: 0; font-size: 17px; text-transform: none; letter-spacing: 0; color: var(--text); }
 .form-error { margin: 0; font-size: 13px; color: var(--crimson-hover); }
 .form-ok { margin: 0; font-size: 13px; color: var(--ok); }
+.turn-usage { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
+.progress { height: 6px; border-radius: 99px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.progress-bar { height: 100%; width: 0%; background: var(--ok); transition: width 0.2s ease; }
+.progress-bar.warn { background: #f5a524; }
+.progress-bar.full { background: var(--crimson); }
 
 .server-setup { display: flex; flex-direction: column; gap: 10px; border-color: var(--crimson); background: linear-gradient(135deg, var(--crimson-soft), var(--surface) 70%); }
 .setup-title { font-weight: 700; font-size: 15px; }

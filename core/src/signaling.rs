@@ -49,6 +49,16 @@ pub fn normalize_code(raw: &str) -> Option<String> {
     (code.len() == 6 && code.chars().all(|c| ALPHABET.contains(c))).then_some(code)
 }
 
+/// Monthly TURN usage returned by `GET /usage`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsageInfo {
+    pub month: String,
+    pub used_gb: f64,
+    pub cap_gb: f64,
+    pub turn_capped: bool,
+}
+
 /// A joined room: the connection plus what the server told us on arrival.
 pub struct Joined {
     pub sig: SignalingHandle,
@@ -120,6 +130,19 @@ impl Server {
         }
         let r: R = res.error_for_status()?.json().await?;
         Ok(r.code)
+    }
+
+    /// Queries the server's estimated TURN bandwidth usage for the current UTC month.
+    pub async fn usage(&self) -> Result<TurnUsageInfo> {
+        let mut req = self.http_client.get(self.http("/usage"));
+        if let Some(k) = &self.key {
+            req = req.header(KEY_HEADER, k);
+        }
+        let res = req.send().await.context("could not reach signaling server")?;
+        if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+            bail!("invalid app key: this version of the app can't use this server");
+        }
+        Ok(res.error_for_status()?.json().await?)
     }
 
     /// Joins a room and waits for the server's welcome (our id, who's there, ICE config).
